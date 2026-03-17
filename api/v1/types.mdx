@@ -1,0 +1,298 @@
+---
+title: "v1 Types"
+description: "Coordinate, VectorNED, and vehicle telemetry objects used throughout the v1 API."
+---
+
+## Coordinate
+
+Represents an absolute point in WGS84 space.
+
+```python
+from aerpawlib.v1 import Coordinate
+
+# Positional or keyword arguments
+pos = Coordinate(35.7275, -78.6960, 10)
+pos = Coordinate(lat=35.7275, lon=-78.6960, alt=10)
+```
+
+### Constructor
+
+```python
+Coordinate(lat: float, lon: float, alt: float = 0)
+```
+
+<ParamField path="lat" type="float" required>
+  Latitude in decimal degrees.
+</ParamField>
+
+<ParamField path="lon" type="float" required>
+  Longitude in decimal degrees.
+</ParamField>
+
+<ParamField path="alt" type="float">
+  Altitude in meters, relative to the home location. Default: `0`.
+</ParamField>
+
+### Properties
+
+<ResponseField name="lat" type="float">Latitude in decimal degrees.</ResponseField>
+<ResponseField name="lon" type="float">Longitude in decimal degrees.</ResponseField>
+<ResponseField name="alt" type="float">Altitude in meters (relative to home).</ResponseField>
+
+### Methods
+
+#### `distance`
+
+```python
+dist = pos.distance(other: Coordinate) -> float
+```
+
+Calculate the 3D distance to another coordinate using the Haversine formula for horizontal distance and accounting for altitude difference.
+
+<ParamField path="other" type="Coordinate" required>Target coordinate.</ParamField>
+
+Returns the 3D distance in meters.
+
+#### `ground_distance`
+
+```python
+dist = pos.ground_distance(other: Coordinate) -> float
+```
+
+Calculate the 2D (horizontal-only) distance by projecting both points to the same altitude before computing.
+
+#### `bearing`
+
+```python
+bearing = pos.bearing(other: Coordinate, wrap_360: bool = True) -> float
+```
+
+Calculate the compass bearing from this coordinate to `other`.
+
+<ParamField path="other" type="Coordinate" required>Target coordinate.</ParamField>
+
+<ParamField path="wrap_360" type="bool">
+  If `True` (default), result is wrapped to `[0, 360)`. Set to `False` for raw `atan2` output.
+</ParamField>
+
+Returns bearing in degrees.
+
+#### `to_json`
+
+```python
+json_str = pos.to_json() -> str
+```
+
+Serialize the coordinate to a JSON string containing `lat`, `lon`, and `alt`.
+
+### Arithmetic operators
+
+```python
+new_pos = pos + vector  # Coordinate + VectorNED → Coordinate
+vector  = pos - other   # Coordinate - Coordinate → VectorNED
+new_pos = pos - vector  # Coordinate - VectorNED → Coordinate
+```
+
+Adding a `VectorNED` displaces the coordinate by the given NED offset. Subtracting two `Coordinate` objects returns the `VectorNED` difference between them.
+
+### Examples
+
+```python
+from aerpawlib.v1 import Coordinate, VectorNED
+
+home = Coordinate(35.7275, -78.6960, 0)
+target = Coordinate(35.7280, -78.6955, 15)
+
+print(home.distance(target))         # 3D distance in meters
+print(home.ground_distance(target))  # 2D horizontal distance
+print(home.bearing(target))          # Compass bearing in degrees
+
+# Offset home 100 m north and 50 m east at 10 m altitude
+offset = VectorNED(100, 50, -10)  # down=-10 → alt+10
+new_pos = home + offset
+
+# Difference between two coordinates
+diff_vec = target - home  # Returns VectorNED
+```
+
+---
+
+## VectorNED
+
+Represents a 3D displacement or velocity in the North-East-Down (NED) frame, with components in meters (displacement) or m/s (velocity).
+
+```python
+from aerpawlib.v1 import VectorNED
+
+vec = VectorNED(5.0, 3.0, 0.0)          # north=5, east=3, down=0
+vec = VectorNED(north=5.0, east=0.0)    # down defaults to 0
+```
+
+### Constructor
+
+```python
+VectorNED(north: float, east: float, down: float = 0)
+```
+
+<ParamField path="north" type="float" required>North component in meters or m/s.</ParamField>
+<ParamField path="east" type="float" required>East component in meters or m/s.</ParamField>
+<ParamField path="down" type="float">Down component in meters or m/s. Default: `0`.</ParamField>
+
+### Properties
+
+<ResponseField name="north" type="float">North component.</ResponseField>
+<ResponseField name="east" type="float">East component.</ResponseField>
+<ResponseField name="down" type="float">Down component (positive = downward).</ResponseField>
+
+### Methods
+
+#### `hypot`
+
+```python
+mag = vec.hypot(ignore_down: bool = False) -> float
+```
+
+Calculate the magnitude of the vector.
+
+<ParamField path="ignore_down" type="bool">
+  If `True`, calculate the 2D ground magnitude (ignoring `down`). Default: `False`.
+</ParamField>
+
+```python
+vec = VectorNED(3, 4, 0)
+print(vec.hypot())                # 5.0  (3D magnitude)
+print(vec.hypot(ignore_down=True))  # 5.0  (same here since down=0)
+```
+
+#### `norm`
+
+```python
+unit_vec = vec.norm() -> VectorNED
+```
+
+Return a unit vector in the same direction. Returns a zero vector if the input is a zero vector.
+
+#### `rotate_by_angle`
+
+```python
+rotated = vec.rotate_by_angle(angle: float) -> VectorNED
+```
+
+Rotate the vector in the horizontal plane (North-East) by `angle` degrees counterclockwise when viewed from above. The `down` component is preserved.
+
+<ParamField path="angle" type="float" required>Rotation angle in degrees.</ParamField>
+
+```python
+# Face a vector north, then rotate 90° to face east
+north_vec = VectorNED(5, 0, 0)
+east_vec = north_vec.rotate_by_angle(90)
+print(east_vec)  # approximately (0, 5, 0)
+```
+
+#### `cross_product`
+
+```python
+result = vec.cross_product(other: VectorNED) -> VectorNED
+```
+
+Calculate the cross product `self × other`.
+
+### Arithmetic operators
+
+```python
+sum_vec   = vec1 + vec2   # Component-wise addition
+diff_vec  = vec1 - vec2   # Component-wise subtraction
+scaled    = vec * 2.0     # Scalar multiplication
+scaled    = 2.0 * vec     # Scalar multiplication (commutative)
+```
+
+### Examples
+
+```python
+from aerpawlib.v1 import VectorNED
+
+# Velocity 5 m/s north-east
+vel = VectorNED(5, 5, 0)
+print(vel.hypot(ignore_down=True))  # ~7.07 m/s ground speed
+
+# Scale up
+faster = vel * 2
+print(faster)  # (10.0, 10.0, 0.0)
+
+# Normalize then scale
+unit = vel.norm()
+ten_ms = unit * 10
+```
+
+---
+
+## Battery object (`_BatteryCompat`)
+
+Returned by `vehicle.battery`.
+
+<ResponseField name="voltage" type="float">Battery voltage in volts.</ResponseField>
+<ResponseField name="current" type="float">Current draw in amps.</ResponseField>
+<ResponseField name="level" type="int">State of charge as a percentage (0–100).</ResponseField>
+
+```python
+batt = drone.battery
+print(f"{batt.voltage:.1f} V, {batt.level}%")
+
+if batt.level < 20:
+    print("Low battery — returning home")
+    await drone.return_to_launch()
+```
+
+---
+
+## GPS object (`_GPSInfoCompat`)
+
+Returned by `vehicle.gps`.
+
+<ResponseField name="fix_type" type="int">
+  GPS fix type: 0–1 = no fix, 2 = 2D fix, 3 = 3D fix.
+</ResponseField>
+
+<ResponseField name="satellites_visible" type="int">
+  Number of satellites currently visible.
+</ResponseField>
+
+```python
+gps = drone.gps
+if gps.fix_type < 3:
+    print(f"Waiting for 3D fix ({gps.satellites_visible} sats visible)")
+```
+
+---
+
+## Attitude object (`_AttitudeCompat`)
+
+Returned by `vehicle.attitude`. All angles are in radians.
+
+<ResponseField name="pitch" type="float">Pitch angle in radians (horizon-relative).</ResponseField>
+<ResponseField name="roll" type="float">Roll angle in radians (horizon-relative).</ResponseField>
+<ResponseField name="yaw" type="float">Yaw angle in radians (world-relative; North = 0).</ResponseField>
+
+```python
+import math
+
+att = drone.attitude
+pitch_deg = math.degrees(att.pitch)
+roll_deg  = math.degrees(att.roll)
+yaw_deg   = math.degrees(att.yaw)
+```
+
+---
+
+## Autopilot info (`_VersionCompat`)
+
+Returned by `vehicle.autopilot_info`.
+
+<ResponseField name="major" type="int | None">Major firmware version.</ResponseField>
+<ResponseField name="minor" type="int | None">Minor firmware version.</ResponseField>
+<ResponseField name="patch" type="int | None">Patch firmware version.</ResponseField>
+
+```python
+info = drone.autopilot_info
+print(f"Firmware: {info.major}.{info.minor}.{info.patch}")
+```

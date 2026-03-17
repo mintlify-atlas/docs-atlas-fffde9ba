@@ -1,0 +1,118 @@
+---
+title: "Installation"
+description: "Install aerpawlib and connect it to a vehicle or simulator."
+---
+
+aerpawlib requires **Python 3.9 or later** and works on any OS. It connects to vehicles over MAVLink, so you'll also need a running ArduPilot-compatible flight controller or SITL instance.
+
+## Install aerpawlib
+
+<Steps>
+  <Step title="Install from source">
+    Clone the repository and install with `pip`:
+
+    <CodeGroup>
+
+    ```bash Basic install
+    pip install -e .
+    ```
+
+    ```bash Development install (includes SITL)
+    pip install -e .[dev]
+    ```
+
+    </CodeGroup>
+
+    The basic install covers everything you need to write and run missions. The `dev` extra adds test dependencies and ArduPilot SITL for local simulation.
+  </Step>
+
+  <Step title="Set up ArduPilot SITL (optional)">
+    If you installed with `[dev]`, run the SITL setup script to download and compile Copter and Rover SITL binaries:
+
+    ```bash
+    aerpawlib-setup-sitl
+    ```
+
+    Alternatively, use the one-liner script that installs dev dependencies, ArduPilot SITL, and MAVProxy in one step:
+
+    ```bash
+    ./scripts/install_dev.sh
+    ```
+
+    <Note>
+      SITL lets you test missions on your local machine without physical hardware. ArduPilot SITL simulates the flight controller; MAVProxy provides the MAVLink proxy that aerpawlib connects to.
+    </Note>
+  </Step>
+
+  <Step title="Verify the installation">
+    Confirm the `aerpawlib` CLI is available:
+
+    ```bash
+    aerpawlib --help
+    ```
+
+    You should see the argument reference for `--script`, `--conn`, `--vehicle`, and other options.
+  </Step>
+</Steps>
+
+## Connection strings
+
+aerpawlib accepts standard MAVLink connection strings via the `--conn` flag. Choose the format that matches your setup:
+
+<Tabs>
+  <Tab title="UDP (SITL)">
+    Use UDP when connecting to ArduPilot SITL or MAVProxy running locally:
+
+    ```bash
+    # Outgoing UDP — connect to a specific host
+    --conn udp://127.0.0.1:14550
+
+    # Incoming UDP — listen on all interfaces
+    --conn udpin://127.0.0.1:14550
+
+    # Bind to port (MAVSDK-style)
+    --conn udp://:14540
+    ```
+
+    `udp://` initiates a connection to a host. `udpin://` binds and waits for an incoming connection. For most SITL setups, `udpin://127.0.0.1:14550` works out of the box.
+  </Tab>
+
+  <Tab title="Serial (hardware)">
+    Use a serial connection string when the flight controller is connected via USB or UART:
+
+    ```bash
+    # USB connection at 57600 baud
+    --conn serial:///dev/ttyUSB0:57600
+
+    # ACM device (common for Pixhawk over USB) at 115200 baud
+    --conn serial:///dev/ttyACM0:115200
+    ```
+
+    Adjust the device path and baud rate to match your hardware. On Windows, use `COM3`, `COM4`, etc.
+  </Tab>
+
+  <Tab title="TCP">
+    Use TCP when connecting to a companion computer or network-accessible autopilot:
+
+    ```bash
+    --conn tcp://192.168.1.100:5760
+    ```
+  </Tab>
+</Tabs>
+
+## Python version support
+
+aerpawlib is tested against Python 3.9 through 3.14:
+
+| Python version | Supported |
+|----------------|-----------|
+| 3.9            | Yes       |
+| 3.10           | Yes       |
+| 3.11           | Yes       |
+| 3.12           | Yes       |
+| 3.13           | Yes       |
+| 3.14           | Yes       |
+
+<Tip>
+  If you're starting a new project, use the latest stable Python 3 release for the best experience.
+</Tip>

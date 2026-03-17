@@ -1,0 +1,181 @@
+---
+title: "AERPAW platform integration"
+description: "Run scripts on the AERPAW testbed: safety pilot arming, OEO logging, checkpoints, abort handling, and differences from standalone SITL operation."
+---
+
+aerpawlib automatically detects whether it is running inside the AERPAW infrastructure by attempting to reach the C-VM forward server at startup. Behavior differs between AERPAW and standalone/SITL mode in a few important ways.
+
+## AERPAW vs. standalone behavior
+
+| Feature | AERPAW | Standalone / SITL |
+|---------|--------|-------------------|
+| Vehicle arming | Safety pilot arms the vehicle; script waits | Vehicle auto-arms once armable state is reached |
+| `AERPAW_Platform` connection | Connected; OEO messages sent | Not connected; OEO calls are no-ops (v1 logs locally) |
+| `--safety-checker-port` (v2) | Defaults to `14580`; failure is fatal | Optional; failure falls back to passthrough |
+| `--no-aerpaw-environment` flag | Not needed | Required to run without AERPAW platform |
+
+<Warning>
+  If you run a script outside the AERPAW environment without passing `--no-aerpaw-environment`, aerpawlib will fail at startup because the C-VM forward server is unreachable.
+</Warning>
+
+---
+
+## Safety pilot arming
+
+On AERPAW, the vehicle does not arm itself. The script waits during the preflight phase for the safety pilot to arm the vehicle from the ground control station.
+
+In standalone or SITL mode, aerpawlib arms the vehicle automatically once it detects the armable condition (GPS fix, battery OK, etc.).
+
+To run in standalone mode:
+
+```bash
+aerpawlib --script my_mission.py --conn udp://127.0.0.1:14550 --vehicle drone \
+  --no-aerpaw-environment
+```
+
+---
+
+## OEO logging
+
+`AERPAW_Platform.log_to_oeo()` sends messages to the OEO console visible in the AERPAW web UI. When not connected to AERPAW, calls are silently dropped (v2) or logged locally (v1).
+
+<Tabs>
+  <Tab title="v1">
+    ```python
+    from aerpawlib.v1.aerpaw import AERPAW_Platform
+
+    # INFO severity (default)
+    AERPAW_Platform.log_to_oeo("[aerpawlib] Taking off to 10m")
+
+    # Other severity levels
+    AERPAW_Platform.log_to_oeo("Battery low", severity="WARNING")
+    AERPAW_Platform.log_to_oeo("Mission aborted", severity="ERROR")
+    AERPAW_Platform.log_to_oeo("Connection lost", severity="CRITICAL")
+    ```
+
+    `AERPAW_Platform` in v1 is a lazy proxy singleton. It connects to the AERPAW forward server on first use.
+  </Tab>
+  <Tab title="v2">
+    ```python
+    from aerpawlib.v2.aerpaw import AERPAW_Platform
+
+    platform = AERPAW_Platform()
+    platform.log_to_oeo("[aerpawlib] Taking off to 10m")
+    platform.log_to_oeo("Connection lost", severity="CRITICAL")
+    ```
+
+    In v2, `AERPAW_Platform` is instantiated by the CLI runner and injected into the experiment loop. You can also instantiate it directly in your script.
+  </Tab>
+</Tabs>
+
+### Severity levels
+
+| Constant | Value | Logger level |
+|----------|-------|--------------|
+| `OEO_MSG_SEV_INFO` | `"INFO"` | `logger.info` |
+| `OEO_MSG_SEV_WARN` | `"WARNING"` | `logger.warning` |
+| `OEO_MSG_SEV_ERR` | `"ERROR"` | `logger.error` |
+| `OEO_MSG_SEV_CRIT` | `"CRITICAL"` | `logger.critical` |
+
+---
+
+## Checkpoints
+
+Checkpoints are persistent boolean, integer, and string flags stored on the C-VM. They let multiple scripts (or multiple runs) coordinate state. Checkpoint methods raise an exception if called outside the AERPAW environment.
+
+```python
+from aerpawlib.v1.aerpaw import AERPAW_Platform
+
+# Set a boolean checkpoint
+AERPAW_Platform.checkpoint_set("takeoff_complete")
+
+# Check whether a checkpoint has been set
+if AERPAW_Platform.checkpoint_check("takeoff_complete"):
+    print("Takeoff was completed in a previous run")
+
+# Integer counter
+AERPAW_Platform.checkpoint_increment_counter("waypoints_visited")
+count = AERPAW_Platform.checkpoint_check_counter("waypoints_visited")
+
+# String value
+AERPAW_Platform.checkpoint_set_string("last_waypoint", "WP_03")
+last = AERPAW_Platform.checkpoint_check_string("last_waypoint")
+```
+
+<Note>
+  Call `AERPAW_Platform.checkpoint_reset_server()` at the start of an experiment to clear any state left from previous runs.
+</Note>
+
+### Checkpoint methods summary
+
+| Method | Description |
+|--------|-------------|
+| `checkpoint_set(name)` | Set a boolean flag |
+| `checkpoint_check(name) -> bool` | Read a boolean flag |
+| `checkpoint_increment_counter(name)` | Increment an integer counter |
+| `checkpoint_check_counter(name) -> int` | Read an integer counter |
+| `checkpoint_set_string(name, value)` | Store a string value |
+| `checkpoint_check_string(name) -> str` | Read a string value |
+| `checkpoint_reset_server()` | Clear all checkpoints |
+
+---
+
+## Abort
+
+Calling `vehicle._abort()` logs a `CRITICAL` message to OEO and stops vehicle movement. Use this for emergency stops when the mission encounters an unrecoverable condition.
+
+```python
+if battery_critical:
+    AERPAW_Platform.log_to_oeo("Battery critical — aborting", severity="CRITICAL")
+    vehicle._abort()
+    return
+```
+
+<Warning>
+  `_abort()` is a private method intended for emergency use. In normal operation, land the vehicle using `vehicle.land()` and let aerpawlib's RTL handle cleanup.
+</Warning>
+
+---
+
+## Example: full AERPAW script
+
+From `examples/v1/preplanned_trajectory.py`, showing AERPAW platform usage in context:
+
+```python
+from aerpawlib.v1.runner import StateMachine, at_init, state
+from aerpawlib.v1.aerpaw import AERPAW_Platform
+from aerpawlib.v1.util import read_from_plan_complete, Coordinate
+from aerpawlib.v1.vehicle import Drone, Vehicle
+
+class PreplannedTrajectory(StateMachine):
+    _waypoints = []
+
+    @at_init
+    async def ping_before_running(self, _):
+        AERPAW_Platform.log_to_oeo("Reading .plan file...")
+
+    @at_init
+    async def initialize_flight(self, vehicle: Vehicle):
+        self._waypoints = read_from_plan_complete(self._waypoint_fname)
+        AERPAW_Platform.log_to_oeo(f".plan file loaded ({len(self._waypoints)} waypoints)")
+
+    @state(name="take_off", first=True)
+    async def take_off(self, vehicle: Vehicle):
+        if isinstance(vehicle, Drone):
+            takeoff_alt = self._waypoints[0]["pos"][2]
+            AERPAW_Platform.log_to_oeo(f"Taking off to {takeoff_alt}m")
+            await vehicle.takeoff(takeoff_alt)
+        return "next_waypoint"
+
+    @state(name="rtl")
+    async def rtl(self, vehicle: Vehicle):
+        home_coords = Coordinate(
+            vehicle.home_coords.lat,
+            vehicle.home_coords.lon,
+            vehicle.position.alt,
+        )
+        await vehicle.goto_coordinates(home_coords)
+        if isinstance(vehicle, Drone):
+            await vehicle.land()
+        AERPAW_Platform.log_to_oeo("done!")
+```

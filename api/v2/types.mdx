@@ -1,0 +1,312 @@
+---
+title: "v2 Types"
+description: "Coordinate, VectorNED, Battery, GPSInfo, Attitude, plan and geofence utilities, ExternalProcess, AERPAW_Platform, and protocol interfaces."
+---
+
+## Coordinate
+
+Absolute point in WGS84 space.
+
+```python
+from aerpawlib.v2 import Coordinate
+
+pos = Coordinate(lat=35.727436, lon=-78.696587, alt=20.0)
+```
+
+<ResponseField name="lat" type="float">Latitude in decimal degrees.</ResponseField>
+<ResponseField name="lon" type="float">Longitude in decimal degrees.</ResponseField>
+<ResponseField name="alt" type="float">Relative altitude in metres above the home point. Defaults to `0.0`.</ResponseField>
+
+### Methods
+
+#### `distance(other: Coordinate) -> float`
+
+Return the 3D distance to another coordinate in metres. Uses the Haversine formula for ground distance then combines with the altitude difference.
+
+#### `ground_distance(other: Coordinate) -> float`
+
+Return the horizontal (2D) distance in metres, ignoring altitude difference.
+
+#### `bearing(other: Coordinate, wrap_360: bool = True) -> float`
+
+Return the bearing from this coordinate to another in degrees.
+
+<ParamField path="other" type="Coordinate" required>Target coordinate.</ParamField>
+<ParamField path="wrap_360" type="bool">If `True` (default), wrap the result to [0, 360).</ParamField>
+
+#### `to_json() -> str`
+
+Return a JSON string with `lat`, `lon`, and `alt` fields.
+
+### Arithmetic operators
+
+```python
+# Coordinate + VectorNED -> Coordinate  (move by NED displacement)
+new_pos = drone.position + VectorNED(north=20, east=0, down=-5)
+
+# Coordinate - VectorNED -> Coordinate
+prev = drone.position - VectorNED(10, 0, 0)
+
+# Coordinate - Coordinate -> VectorNED  (displacement between two points)
+delta = pos_a - pos_b
+```
+
+---
+
+## VectorNED
+
+Displacement in NED (North, East, Down) coordinates, in metres.
+
+```python
+from aerpawlib.v2 import VectorNED
+
+v = VectorNED(north=10.0, east=5.0, down=0.0)
+```
+
+<ResponseField name="north" type="float">Northward component in metres.</ResponseField>
+<ResponseField name="east" type="float">Eastward component in metres.</ResponseField>
+<ResponseField name="down" type="float">Downward component in metres. Defaults to `0.0`.</ResponseField>
+
+### Methods
+
+#### `hypot(ignore_down: bool = False) -> float`
+
+Return the magnitude of the vector.
+
+<ParamField path="ignore_down" type="bool">If `True`, compute only the horizontal (2D) magnitude.</ParamField>
+
+#### `norm() -> VectorNED`
+
+Return the unit vector. Returns `VectorNED(0, 0, 0)` if the magnitude is zero.
+
+#### `rotate_by_angle(angle_deg: float) -> VectorNED`
+
+Return a new vector rotated by `angle_deg` degrees (counterclockwise from above).
+
+#### `cross_product(other: VectorNED) -> VectorNED`
+
+Return `self × other`. Raises `TypeError` if `other` is not a `VectorNED`.
+
+### Arithmetic operators
+
+```python
+v1 + v2    # VectorNED addition
+v1 - v2    # VectorNED subtraction
+v * 2.0    # scalar multiplication
+2.0 * v    # scalar multiplication (reflected)
+```
+
+---
+
+## Battery
+
+Battery telemetry dataclass.
+
+```python
+from aerpawlib.v2 import Battery
+
+bat: Battery = drone.battery
+```
+
+<ResponseField name="voltage" type="float">Voltage in volts.</ResponseField>
+<ResponseField name="current" type="float">Current draw in amps.</ResponseField>
+<ResponseField name="level" type="int">State of charge, 0–100 %.</ResponseField>
+
+---
+
+## GPSInfo
+
+GPS telemetry dataclass.
+
+<ResponseField name="fix_type" type="int">MAVLink GPS fix type. 0–1 = no fix, 2 = 2D fix, 3 = 3D fix.</ResponseField>
+<ResponseField name="satellites_visible" type="int">Number of visible satellites.</ResponseField>
+
+---
+
+## Attitude
+
+Attitude telemetry dataclass (roll, pitch, yaw in radians).
+
+<ResponseField name="roll" type="float">Roll angle in radians.</ResponseField>
+<ResponseField name="pitch" type="float">Pitch angle in radians.</ResponseField>
+<ResponseField name="yaw" type="float">Yaw angle in radians.</ResponseField>
+
+---
+
+## Waypoint
+
+`Waypoint` is a type alias for the tuple `(command, x, y, z, waypoint_id, speed)` produced by `read_from_plan`.
+
+```python
+Waypoint = Tuple[int, float, float, float, int, float]
+#               cmd   lat   lon   alt   id    speed
+```
+
+---
+
+## Plan utilities
+
+Import from `aerpawlib.v2` or `aerpawlib.v2.plan`.
+
+### `read_from_plan(path, default_speed=DEFAULT_WAYPOINT_SPEED) -> List[Waypoint]`
+
+Parse a QGroundControl `.plan` file and return only navigation waypoints (takeoff, waypoint, and RTL items).
+
+<ParamField path="path" type="str" required>Path to the `.plan` JSON file.</ParamField>
+<ParamField path="default_speed" type="float">Speed in m/s to use when the plan does not specify one.</ParamField>
+
+Raises `PlanError` if the file is missing, not valid JSON, or not a Plan file type.
+
+### `read_from_plan_complete(path, default_speed=DEFAULT_WAYPOINT_SPEED) -> List[dict]`
+
+Return all waypoints as detailed dictionaries, including `id`, `command`, `pos`, `wait_for`, and `speed`.
+
+### `get_location_from_waypoint(waypoint: Waypoint) -> Coordinate`
+
+Extract a `Coordinate` from a waypoint tuple.
+
+```python
+from aerpawlib.v2.plan import read_from_plan, get_location_from_waypoint
+
+waypoints = read_from_plan("mission.plan")
+for wp in waypoints:
+    coord = get_location_from_waypoint(wp)
+    await drone.goto_coordinates(coord)
+```
+
+---
+
+## Geofence utilities
+
+Import from `aerpawlib.v2` or `aerpawlib.v2.geofence`.
+
+### `read_geofence(file_path: str) -> List[dict]`
+
+Parse a KML file into a list of `{'lat': ..., 'lon': ...}` dicts representing a polygon.
+
+Raises `ValueError` if no valid `LinearRing` polygon is found.
+
+### `inside(lon, lat, geofence) -> bool`
+
+Check whether a point is inside the polygon using ray-casting.
+
+<ParamField path="lon" type="float" required>Longitude of the point to test.</ParamField>
+<ParamField path="lat" type="float" required>Latitude of the point to test.</ParamField>
+<ParamField path="geofence" type="List[dict]" required>Polygon from `read_geofence`.</ParamField>
+
+### `do_intersect(px, py, qx, qy, rx, ry, sx, sy) -> bool`
+
+Return `True` if segment PQ intersects segment RS.
+
+```python
+from aerpawlib.v2 import read_geofence, inside, do_intersect
+
+polygon = read_geofence("flight_area.kml")
+if inside(lon=-78.696, lat=35.727, geofence=polygon):
+    print("Inside geofence")
+```
+
+---
+
+## Protocol interfaces
+
+### `GPSProtocol`
+
+Structural protocol for GPS-like objects.
+
+<ResponseField name="fix_type" type="int">MAVLink GPS fix type.</ResponseField>
+<ResponseField name="satellites_visible" type="int">Number of visible satellites.</ResponseField>
+
+### `VehicleProtocol`
+
+Structural protocol for vehicle-like objects. Satisfied by `Vehicle`, `MockVehicle`, and any class that provides the required properties and `heartbeat_tick()`.
+
+<ResponseField name="connected" type="bool">Whether the vehicle connection is active.</ResponseField>
+<ResponseField name="armed" type="bool">Whether the vehicle is armed.</ResponseField>
+<ResponseField name="position" type="Coordinate">Latest known position.</ResponseField>
+<ResponseField name="home_coords" type="Optional[Coordinate]">Home coordinate.</ResponseField>
+<ResponseField name="battery" type="Battery">Battery telemetry.</ResponseField>
+<ResponseField name="gps" type="GPSInfo">GPS telemetry.</ResponseField>
+<ResponseField name="heading" type="float">Heading in degrees.</ResponseField>
+
+Method: `heartbeat_tick() -> None` — called by the connection handler on telemetry receipt.
+
+---
+
+## ExternalProcess
+
+Async wrapper for launching and communicating with subprocesses.
+
+```python
+from aerpawlib.v2 import ExternalProcess
+
+proc = ExternalProcess("python3", params=["-u", "sensor_reader.py"])
+await proc.start()
+```
+
+### Constructor
+
+<ParamField path="executable" type="str" required>Path or name of the executable.</ParamField>
+<ParamField path="params" type="Optional[List[str]]">Command-line arguments. Defaults to `[]`.</ParamField>
+<ParamField path="stdin" type="Optional[str]">Path to redirect stdin from a file. `None` (default) opens a pipe.</ParamField>
+<ParamField path="stdout" type="Optional[str]">Path to redirect stdout to a file. `None` (default) opens a pipe.</ParamField>
+
+### `await start()`
+
+Launch the subprocess.
+
+### `await read_line() -> Optional[str]`
+
+Read one line from stdout. Returns `None` when the process has ended.
+
+### `await send_input(data: str)`
+
+Write a string to the process's stdin.
+
+Raises `RuntimeError` if stdin was redirected to a file.
+
+### `await wait_until_output(output_regex: str) -> List[str]`
+
+Block until a stdout line matches the regex. Returns all lines collected up to and including the matching line.
+
+<ParamField path="output_regex" type="str" required>Regular expression to search for in each output line.</ParamField>
+
+### `await wait_until_terminated()`
+
+Wait until the process exits.
+
+```python
+proc = ExternalProcess("python3", params=["-u", "sensor.py"])
+await proc.start()
+lines = await proc.wait_until_output(r"READY")
+await proc.send_input("start\n")
+line = await proc.read_line()
+await proc.wait_until_terminated()
+```
+
+---
+
+## AERPAW_Platform
+
+Singleton helper for sending messages to the OEO console on the AERPAW testbed. Safe to use outside AERPAW — operations are silently skipped when the forward server is unreachable.
+
+```python
+from aerpawlib.v2 import AERPAW_Platform
+
+platform = AERPAW_Platform()
+platform.log_to_oeo("Mission started", severity="INFO")
+```
+
+### `log_to_oeo(msg, severity="INFO", agent_id=None)`
+
+Log a message locally and forward it to the OEO console.
+
+<ParamField path="msg" type="str" required>Human-readable message.</ParamField>
+<ParamField path="severity" type="str">One of `"INFO"`, `"WARNING"`, `"ERROR"`, `"CRITICAL"`. Defaults to `"INFO"`.</ParamField>
+<ParamField path="agent_id" type="Optional[str]">Optional agent identifier appended to the OEO request URL.</ParamField>
+
+<Note>
+  `AERPAW_Platform` is a singleton — all calls to `AERPAW_Platform()` return the
+  same instance. The first instantiation attempts to reach the forward server;
+  subsequent calls are instant.
+</Note>

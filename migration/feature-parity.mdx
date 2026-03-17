@@ -1,0 +1,97 @@
+---
+title: "v1 vs v2 feature parity"
+description: "Complete feature comparison between aerpawlib v1 and v2, including v2-only additions and behavioral differences."
+---
+
+This page lists every feature in aerpawlib and whether it is present in v1, v2, or both.
+
+## Feature comparison
+
+| Feature | v1 | v2 |
+|---|---|---|
+| `Drone` | Yes | Yes |
+| `Rover` | Yes | Yes |
+| `DummyVehicle` | Yes | Yes |
+| `BasicRunner` | Yes | Yes |
+| `StateMachine` | Yes | Yes |
+| `ZmqStateMachine` | Yes | Yes |
+| `@entrypoint` | Yes | Yes |
+| `@state`, `@timed_state` | Yes | Yes |
+| `@background`, `@at_init` | Yes | Yes |
+| `@expose_zmq`, `@expose_field_zmq` | Yes | Yes |
+| `Coordinate` | Yes | Yes |
+| `VectorNED` | Yes | Yes |
+| `VectorNED.cross_product` | Yes | Yes |
+| `read_from_plan` | Yes | Yes |
+| `read_from_plan_complete` | Yes | Yes |
+| `get_location_from_waypoint` | Yes | Yes |
+| Geofence (`read_geofence`, `inside`, `do_intersect`) | Yes | Yes |
+| `SafetyCheckerClient` / `SafetyCheckerServer` | Yes | Yes |
+| Command validation (`can_takeoff`, `can_goto`, `can_land`) | No | **Yes** |
+| `vehicle.safety` integration | No | **Yes** |
+| Config dataclass (`BasicRunnerConfig`, `StateMachineConfig`) | No | **Yes** |
+| Non-blocking goto (`VehicleTask`) | No | **Yes** |
+| Connection style | Blocking | Async |
+
+---
+
+## v2-only features
+
+### Command validation
+
+v2 exposes `can_takeoff`, `can_goto`, and `can_land` as methods on the vehicle object. These methods query the attached `SafetyCheckerClient` (if any) before a command is issued, returning a `(bool, str)` tuple.
+
+```python
+ok, msg = await drone.can_takeoff(altitude=10)
+if not ok:
+    print(f"Takeoff denied: {msg}")
+    return
+await drone.takeoff(altitude=10)
+```
+
+### `vehicle.safety` integration
+
+The safety client is passed at connection time and stored on `vehicle.safety`. You no longer manage a separate `SafetyCheckerClient` instance in your script.
+
+```python
+drone = await Drone.connect(conn_str, safety=SafetyCheckerClient("127.0.0.1", 14580))
+# drone.safety is now the client — can_takeoff / can_goto delegate to it
+```
+
+### Config dataclass
+
+`BasicRunnerConfig` and `StateMachineConfig` let you declare runner configuration as a class attribute instead of relying on decorator inspection at runtime.
+
+```python
+class MyMission(BasicRunner):
+    config = BasicRunnerConfig(entrypoint="run")
+
+    async def run(self, drone: Drone):
+        ...
+```
+
+### `VehicleTask` (non-blocking goto)
+
+`VehicleTask` wraps a `goto` command as a non-blocking handle, allowing other tasks to run concurrently while the vehicle is in transit.
+
+```python
+task = drone.goto_coordinates_nonblocking(target)
+# do other work here...
+await task  # wait for arrival
+```
+
+---
+
+## Behavioral differences
+
+| Behavior | v1 | v2 |
+|---|---|---|
+| Connection | Blocks the calling thread; MAVLink heartbeat is established synchronously | `await Vehicle.connect(...)` — non-blocking, fits naturally into async code |
+| MAVSDK event loop | Private background thread per vehicle | Shared `asyncio` event loop with user code |
+| Telemetry reads | Protected by `ThreadSafeValue` locks | Direct attribute access, no locking needed |
+| `vehicle.close()` | Required to stop background thread | Not required; loop cleanup is automatic |
+| `SafetyCheckerClient` | Instantiated and called manually | Injected at `connect()`, exposed via `vehicle.safety` |
+
+<Note>
+  v1 remains supported and receives bug fixes. There are no plans to remove v1 from the library. New features are developed in v2.
+</Note>

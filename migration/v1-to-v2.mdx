@@ -1,0 +1,207 @@
+---
+title: "Migrating from v1 to v2"
+description: "Step-by-step guide for updating aerpawlib scripts from the v1 API to the modern v2 API."
+---
+
+This guide covers every breaking change between `aerpawlib` v1 and v2 so you can update existing scripts with confidence.
+
+## Summary of key differences
+
+| Area | v1 | v2 |
+|---|---|---|
+| Runners | `inspect.getmembers` + function attributes | Config dataclass or decorators |
+| Safety | `SafetyCheckerClient` used directly | `vehicle.safety` + `can_takeoff` / `can_goto` / `can_land` |
+| Types | `aerpawlib.v1.util` | `aerpawlib.v2.types` |
+| Plan files | `aerpawlib.v1.util.read_from_plan` | `aerpawlib.v2.plan.read_from_plan` |
+| Connection | Blocking (`_connect_sync`) | Async (`await Vehicle.connect(...)`) |
+| Event loop | Dual-loop (background MAVSDK thread + main thread) | Single `asyncio` event loop |
+
+---
+
+## Import changes
+
+All public symbols have moved from `aerpawlib.v1` submodules to their `aerpawlib.v2` equivalents.
+
+<Tabs>
+  <Tab title="v1">
+    ```python
+    from aerpawlib.v1 import Drone, BasicRunner, entrypoint
+    from aerpawlib.v1.util import Coordinate, VectorNED
+    from aerpawlib.v1.util import read_from_plan, read_from_plan_complete
+    from aerpawlib.v1.safety import SafetyCheckerClient
+    ```
+  </Tab>
+  <Tab title="v2">
+    ```python
+    from aerpawlib.v2 import Drone, BasicRunner, entrypoint
+    from aerpawlib.v2.types import Coordinate, VectorNED
+    from aerpawlib.v2.plan import read_from_plan, read_from_plan_complete
+    from aerpawlib.v2.safety import SafetyCheckerClient
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Runner changes
+
+v2 supports two styles for defining how a runner discovers its entry point. The decorator style is backward compatible with v1; the explicit config style is new.
+
+<Tabs>
+  <Tab title="v1 (decorator)">
+    ```python
+    from aerpawlib.v1 import BasicRunner, Drone, entrypoint
+
+    class MyMission(BasicRunner):
+        @entrypoint
+        async def run(self, drone: Drone):
+            await drone.takeoff(altitude=10)
+    ```
+  </Tab>
+  <Tab title="v2 decorator (compatible)">
+    ```python
+    from aerpawlib.v2 import BasicRunner, Drone, entrypoint
+
+    class MyMission(BasicRunner):
+        @entrypoint
+        async def run(self, drone: Drone):
+            await drone.takeoff(altitude=10)
+    ```
+  </Tab>
+  <Tab title="v2 config dataclass (new)">
+    ```python
+    from aerpawlib.v2 import BasicRunner, BasicRunnerConfig, Drone
+
+    class MyMission(BasicRunner):
+        config = BasicRunnerConfig(entrypoint="run")
+
+        async def run(self, drone: Drone):
+            await drone.takeoff(altitude=10)
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  The config dataclass style (`BasicRunnerConfig`, `StateMachineConfig`) is v2-only and makes the runner's configuration explicit and inspectable at class definition time.
+</Note>
+
+---
+
+## Safety changes
+
+v1 required you to instantiate `SafetyCheckerClient` manually and call its methods before issuing commands. v2 integrates safety directly into the vehicle object.
+
+<Tabs>
+  <Tab title="v1">
+    ```python
+    from aerpawlib.v1.safety import SafetyCheckerClient
+    from aerpawlib.v1 import Drone
+
+    # Manual safety client — must be constructed and called by the user
+    safety = SafetyCheckerClient("127.0.0.1", 14580)
+    ok = safety.can_takeoff(altitude=10)
+    if not ok:
+        return
+    await drone.takeoff(altitude=10)
+    ```
+  </Tab>
+  <Tab title="v2">
+    ```python
+    from aerpawlib.v2.safety import SafetyCheckerClient
+    from aerpawlib.v2 import Drone
+
+    # Pass the safety client at connect time
+    client = SafetyCheckerClient("127.0.0.1", 14580)
+    drone = await Drone.connect(conn, safety=client)
+
+    # vehicle.safety is now populated; use can_* methods on the vehicle
+    ok, msg = await drone.can_takeoff(10)
+    if not ok:
+        print(f"Takeoff denied: {msg}")
+        return
+    await drone.takeoff(altitude=10)
+
+    # Similarly for waypoint commands
+    ok, msg = await drone.can_goto(target)
+    if not ok:
+        return
+    await drone.goto_coordinates(target)
+    ```
+  </Tab>
+</Tabs>
+
+<Info>
+  When running via the `aerpawlib` CLI, the safety checker is built and injected automatically from `--safety-checker-port` (default `14580` on AERPAW). Outside AERPAW the safety checker is optional — failures pass through without blocking commands.
+</Info>
+
+---
+
+## Type module changes
+
+<Tabs>
+  <Tab title="v1">
+    ```python
+    from aerpawlib.v1.util import Coordinate, VectorNED
+    ```
+  </Tab>
+  <Tab title="v2">
+    ```python
+    from aerpawlib.v2.types import Coordinate, VectorNED
+    ```
+  </Tab>
+</Tabs>
+
+The `Coordinate` and `VectorNED` classes have the same public API in both versions. Only the import path changes.
+
+---
+
+## Plan file changes
+
+<Tabs>
+  <Tab title="v1">
+    ```python
+    from aerpawlib.v1.util import read_from_plan, read_from_plan_complete
+
+    waypoints = read_from_plan("mission.plan")
+    ```
+  </Tab>
+  <Tab title="v2">
+    ```python
+    from aerpawlib.v2.plan import read_from_plan, read_from_plan_complete
+
+    waypoints = read_from_plan("mission.plan")
+    ```
+  </Tab>
+</Tabs>
+
+The `read_from_plan` and `read_from_plan_complete` functions expose the same API. Only the module path changes.
+
+---
+
+## Architecture differences
+
+### v1: Dual-loop architecture
+
+Every v1 `Vehicle` instance runs a private background thread with its own `asyncio` event loop dedicated to MAVSDK. User code runs on the main thread. All vehicle commands are bridged between threads via `_run_on_mavsdk_loop()`, which uses `asyncio.run_coroutine_threadsafe` internally.
+
+- Telemetry is received on the background thread and stored in `ThreadSafeValue` wrappers.
+- Commands block the caller while the background loop executes the MAVSDK coroutine.
+- `vehicle.close()` must be called explicitly to stop the background thread.
+
+This design preserves backward compatibility with DroneKit-style synchronous scripts but adds per-command latency and thread lifecycle overhead.
+
+### v2: Single event loop
+
+v2 runs entirely on a single `asyncio` event loop. There is no background thread, no `ThreadSafeValue` locking, and no `_run_on_mavsdk_loop` bridging. Vehicle commands are native coroutines awaited directly.
+
+```python
+# v2: straightforward async/await — no thread bridging
+async def run(self, drone: Drone):
+    await drone.takeoff(altitude=10)
+    await drone.goto_coordinates(target)
+    await drone.land()
+```
+
+<Warning>
+  The v1 blocking connection (`Vehicle` constructor calling `_connect_sync`) is not available in v2. Use `await Drone.connect(conn_str)` inside an `async def`.
+</Warning>

@@ -1,0 +1,294 @@
+---
+title: "v1 ZMQ utilities"
+description: "ZMQ proxy, publisher/subscriber patterns, ExternalProcess, and multi-vehicle setup."
+---
+
+The v1 API ships ZMQ-based utilities for inter-process communication between co-located vehicle scripts. The core primitive is a **forwarder proxy** (XSUB/XPUB) that all runners connect to; each `ZmqStateMachine` publishes and subscribes through this single hub.
+
+## ZMQ proxy
+
+### `run_zmq_proxy`
+
+```python
+from aerpawlib.v1 import run_zmq_proxy
+
+run_zmq_proxy()
+```
+
+Start an XSUB/XPUB forwarder proxy. Binds:
+
+- **In port** `5570` — runners publish here (XSUB side)
+- **Out port** `5571` — runners subscribe here (XPUB side)
+
+<Warning>
+`run_zmq_proxy()` blocks indefinitely. Always run it in a separate process or thread **before** starting any `ZmqStateMachine` runners.
+</Warning>
+
+```python
+from multiprocessing import Process
+from aerpawlib.v1 import run_zmq_proxy
+
+proxy = Process(target=run_zmq_proxy, daemon=True)
+proxy.start()
+# Now start your runners...
+```
+
+### `check_zmq_proxy_reachable`
+
+```python
+from aerpawlib.v1 import check_zmq_proxy_reachable
+
+reachable = check_zmq_proxy_reachable(proxy_addr: str, timeout_s: float = 2.0) -> bool
+```
+
+Check whether the ZMQ proxy is accepting connections by attempting a TCP connection to the subscribe port (`5571`).
+
+<ParamField path="proxy_addr" type="str" required>
+  Hostname or IP address of the proxy server (e.g. `"127.0.0.1"`).
+</ParamField>
+
+<ParamField path="timeout_s" type="float">
+  Connection attempt timeout in seconds. Default: `2.0`.
+</ParamField>
+
+Returns `True` if reachable, `False` otherwise.
+
+```python
+if not check_zmq_proxy_reachable("127.0.0.1"):
+    raise RuntimeError("ZMQ proxy is not running — start run_zmq_proxy() first")
+```
+
+---
+
+## Multi-vehicle setup pattern
+
+A typical two-vehicle setup has three processes:
+
+```
+ Process 1: ZMQ proxy           (run_zmq_proxy)
+ Process 2: Leader runner       (ZmqStateMachine, identifier="leader")
+ Process 3: Follower runner     (ZmqStateMachine, identifier="follower")
+```
+
+```python
+# launch.py
+from multiprocessing import Process
+from aerpawlib.v1 import run_zmq_proxy
+
+if __name__ == "__main__":
+    # 1. Start proxy first
+    proxy = Process(target=run_zmq_proxy, daemon=True)
+    proxy.start()
+
+    # 2. Start vehicle processes (using your own launch mechanism)
+    # e.g. subprocess.Popen(["python", "leader.py"])
+    # e.g. subprocess.Popen(["python", "follower.py"])
+```
+
+```python
+# leader.py
+from aerpawlib.v1 import ZmqStateMachine, state, expose_zmq, expose_field_zmq, Drone
+
+class Leader(ZmqStateMachine):
+    def __init__(self):
+        self._initialize_zmq_bindings("leader", "127.0.0.1")
+
+    @state(name="takeoff", first=True)
+    @expose_zmq(name="takeoff")
+    async def takeoff(self, drone: Drone):
+        await drone.takeoff(15)
+        await self.transition_runner("follower", "takeoff")
+        return "fly"
+
+    @state(name="fly")
+    async def fly(self, drone: Drone):
+        # ...
+        return None
+
+    @expose_field_zmq(name="altitude")
+    async def get_altitude(self, drone: Drone):
+        return drone.position.alt
+```
+
+```python
+# follower.py
+from aerpawlib.v1 import ZmqStateMachine, state, expose_zmq, Drone
+
+class Follower(ZmqStateMachine):
+    def __init__(self):
+        self._initialize_zmq_bindings("follower", "127.0.0.1")
+
+    @state(name="wait", first=True)
+    async def wait(self, drone: Drone):
+        # Stays in this state until leader transitions us
+        return "wait"
+
+    @state(name="takeoff")
+    @expose_zmq(name="takeoff")
+    async def takeoff(self, drone: Drone):
+        leader_alt = await self.query_field("leader", "altitude")
+        await drone.takeoff(leader_alt - 5)  # Fly 5 m below leader
+        return None
+```
+
+---
+
+## ExternalProcess
+
+`ExternalProcess` provides an async wrapper around a subprocess, letting you read its stdout and write to its stdin from within aerpawlib runner methods.
+
+```python
+from aerpawlib.v1 import ExternalProcess
+```
+
+### Constructor
+
+```python
+ExternalProcess(
+    executable: str,
+    params: Optional[List[str]] = None,
+    stdin: Optional[str] = None,
+    stdout: Optional[str] = None,
+)
+```
+
+Prepares the process but does **not** start it. Call `await process.start()` to launch.
+
+<ParamField path="executable" type="str" required>
+  Executable path or shell command.
+</ParamField>
+
+<ParamField path="params" type="List[str] | None">
+  Command-line arguments passed to the executable. Default: `None` (no arguments).
+</ParamField>
+
+<ParamField path="stdin" type="str | None">
+  File path to redirect stdin from. If set, `send_input` becomes unavailable. Default: `None`.
+</ParamField>
+
+<ParamField path="stdout" type="str | None">
+  File path to redirect stdout to. If set, `read_line` returns `None`. Default: `None`.
+</ParamField>
+
+### `start`
+
+```python
+await process.start()
+```
+
+Launch the executable as an async subprocess. Must be called before any other methods.
+
+### `read_line`
+
+```python
+line = await process.read_line() -> Optional[str]
+```
+
+Read one line from the process's stdout buffer (ASCII, trailing whitespace stripped).
+
+Returns `None` if the process has exited or stdout is redirected to a file.
+
+### `send_input`
+
+```python
+await process.send_input(data: str)
+```
+
+Write `data` to the process's stdin.
+
+<ParamField path="data" type="str" required>String to send to stdin.</ParamField>
+
+Raises `RuntimeError` if stdin is redirected to a file.
+
+### `wait_until_terminated`
+
+```python
+await process.wait_until_terminated()
+```
+
+Block until the subprocess exits.
+
+### `wait_until_output`
+
+```python
+lines = await process.wait_until_output(output_regex) -> List[str]
+```
+
+Block and read lines until one matches `output_regex`. Returns all lines collected up to and including the match, or the buffer collected so far if the process exits first.
+
+<ParamField path="output_regex" type="str | re.Pattern" required>
+  Regular expression to match against each output line.
+</ParamField>
+
+### Example
+
+```python
+from aerpawlib.v1 import ExternalProcess, BasicRunner, entrypoint, Drone
+
+class MissionWithSensor(BasicRunner):
+    @entrypoint
+    async def run(self, drone: Drone):
+        sensor = ExternalProcess(
+            "python",
+            params=["sensor_driver.py", "--rate", "10"],
+        )
+        await sensor.start()
+
+        # Wait for the sensor to signal it is ready
+        await sensor.wait_until_output(r"READY")
+
+        await drone.takeoff(10)
+
+        # Read a sensor measurement
+        measurement = await sensor.read_line()
+        print(f"Sensor: {measurement}")
+
+        # Send a command to the sensor
+        await sensor.send_input("CALIBRATE\n")
+
+        await drone.land()
+        await sensor.wait_until_terminated()
+```
+
+---
+
+## ZMQ publisher / subscriber patterns
+
+For lower-level ZMQ usage outside of `ZmqStateMachine`, use `pyzmq` directly with the proxy ports:
+
+<CodeGroup>
+```python Publisher
+import zmq
+
+context = zmq.Context()
+socket = context.socket(zmq.PUB)
+socket.connect("tcp://127.0.0.1:5570")  # ZMQ_PROXY_IN_PORT
+
+socket.send_pyobj({"identifier": "leader", "status": "flying"})
+```
+
+```python Subscriber
+import zmq
+
+context = zmq.Context()
+socket = context.socket(zmq.SUB)
+socket.connect("tcp://127.0.0.1:5571")  # ZMQ_PROXY_OUT_PORT
+socket.setsockopt_string(zmq.SUBSCRIBE, "")
+
+msg = socket.recv_pyobj()
+print(msg)
+```
+</CodeGroup>
+
+<Tip>
+Use `ZmqStateMachine` with `@expose_zmq` and `@expose_field_zmq` for structured multi-vehicle coordination instead of raw pub/sub — it handles message routing and reply tracking automatically.
+</Tip>
+
+---
+
+## Port reference
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `ZMQ_PROXY_IN_PORT` | `5570` | Publishers connect here (XSUB) |
+| `ZMQ_PROXY_OUT_PORT` | `5571` | Subscribers connect here (XPUB) |

@@ -1,0 +1,384 @@
+---
+title: "v2 Vehicles"
+description: "Vehicle base class, Drone and Rover implementations, VehicleTask for non-blocking commands, and DummyVehicle for dry-run testing."
+---
+
+## Vehicle (base class)
+
+`Vehicle` is the async base class shared by `Drone` and `Rover`. Telemetry properties are updated in-place by background subscriptions running on the same event loop — no `ThreadSafeValue` wrapper required.
+
+### Connecting
+
+```python
+from aerpawlib.v2 import Drone
+from aerpawlib.v2.safety import SafetyCheckerClient
+
+# Basic
+drone = await Drone.connect("udpin://127.0.0.1:14550")
+
+# With safety checker
+client = SafetyCheckerClient("127.0.0.1", 14580)
+drone = await Drone.connect("udpin://127.0.0.1:14550", safety=client)
+
+# Custom timeout
+drone = await Drone.connect("udpin://127.0.0.1:14550", timeout=60.0)
+```
+
+<ParamField path="connection_string" type="str" required>
+  MAVLink connection string. Supported schemes: `udpin`, `udp`, `tcpin`, `tcp`, `serial`.
+  Example: `"udpin://0.0.0.0:14550"`.
+</ParamField>
+
+<ParamField path="mavsdk_server_port" type="int">
+  gRPC port for the `mavsdk_server` process. Defaults to `50051`.
+</ParamField>
+
+<ParamField path="timeout" type="float">
+  Connection timeout in seconds. Raises `ConnectionTimeoutError` if no heartbeat
+  is received within this window. Defaults to the library constant (30 s).
+</ParamField>
+
+<ParamField path="safety" type="SafetyCheckerClient | NoOpSafetyChecker | None">
+  Optional safety checker. Passed to `can_takeoff`, `can_goto`, and `can_land`.
+  `None` disables external safety checks (local checks still run).
+</ParamField>
+
+### Properties
+
+<ResponseField name="position" type="Coordinate">
+  Current WGS84 position. `alt` is relative altitude in metres above the home point.
+</ResponseField>
+
+<ResponseField name="home_coords" type="Optional[Coordinate]">
+  Home / launch coordinate. `None` until first home telemetry is received.
+</ResponseField>
+
+<ResponseField name="home_amsl" type="float">
+  Home altitude in AMSL metres.
+</ResponseField>
+
+<ResponseField name="battery" type="Battery">
+  Latest battery telemetry.
+  <Expandable title="Battery fields">
+    <ResponseField name="voltage" type="float">Voltage in volts.</ResponseField>
+    <ResponseField name="current" type="float">Current draw in amps.</ResponseField>
+    <ResponseField name="level" type="int">State of charge, 0–100 %.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="gps" type="GPSInfo">
+  Latest GPS telemetry.
+  <Expandable title="GPSInfo fields">
+    <ResponseField name="fix_type" type="int">MAVLink fix type: 0–1 no fix, 2 = 2D, 3 = 3D.</ResponseField>
+    <ResponseField name="satellites_visible" type="int">Number of visible satellites.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="armed" type="bool">
+  `True` when the vehicle is armed.
+</ResponseField>
+
+<ResponseField name="heading" type="float">
+  Current heading in degrees (0–360).
+</ResponseField>
+
+<ResponseField name="velocity" type="VectorNED">
+  Current NED velocity vector in m/s.
+</ResponseField>
+
+<ResponseField name="attitude" type="Attitude">
+  Roll, pitch, and yaw in radians.
+  <Expandable title="Attitude fields">
+    <ResponseField name="roll" type="float">Roll in radians.</ResponseField>
+    <ResponseField name="pitch" type="float">Pitch in radians.</ResponseField>
+    <ResponseField name="yaw" type="float">Yaw in radians.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="mode" type="str">
+  Current autopilot flight mode name (e.g. `"GUIDED"`, `"RTL"`).
+</ResponseField>
+
+<ResponseField name="armable" type="bool">
+  `True` when pre-arm checks pass.
+</ResponseField>
+
+<ResponseField name="connected" type="bool">
+  `True` when the connection is active and `close()` has not been called.
+</ResponseField>
+
+<ResponseField name="closed" type="bool">
+  `True` after `close()` has been called.
+</ResponseField>
+
+<ResponseField name="safety" type="SafetyCheckerClient | NoOpSafetyChecker | None">
+  The safety checker passed at construction. Can be reassigned after construction.
+</ResponseField>
+
+### Common commands
+
+#### `await set_armed(value)`
+
+Arm or disarm the vehicle.
+
+<ParamField path="value" type="bool" required>
+  `True` to arm, `False` to disarm.
+</ParamField>
+
+Raises `NotArmableError` if the vehicle cannot be armed, `ArmError` / `DisarmError` on command failure.
+
+#### `await set_groundspeed(velocity)`
+
+Set the maximum ground speed.
+
+<ParamField path="velocity" type="float" required>
+  Maximum cruise speed in m/s.
+</ParamField>
+
+#### `close()`
+
+Cancel all telemetry and command tasks and release the connection. Idempotent.
+
+### Command validation
+
+All three methods return `Tuple[bool, str]` — `(ok, message)`. When `ok` is `False`, `message` explains why.
+
+#### `await can_takeoff(altitude, min_battery_percent=10.0)`
+
+Local checks: armable state, GPS 3D fix, battery level. If `safety` is set, also calls `safety.validate_takeoff`.
+
+<ParamField path="altitude" type="float" required>
+  Requested takeoff altitude in metres.
+</ParamField>
+<ParamField path="min_battery_percent" type="float">
+  Minimum battery level required. Defaults to `10.0`.
+</ParamField>
+
+#### `await can_goto(target, tolerance=2.0)`
+
+Local checks: tolerance within valid range. If `safety` is set, calls `safety.validate_waypoint`.
+
+<ParamField path="target" type="Coordinate" required>
+  Target waypoint.
+</ParamField>
+<ParamField path="tolerance" type="float">
+  Arrival tolerance in metres. Defaults to `2.0`.
+</ParamField>
+
+#### `await can_land()`
+
+If `safety` is set, calls `safety.validate_landing`. Otherwise returns `(True, "")`.
+
+---
+
+## Drone
+
+`Drone` extends `Vehicle` for multirotors. Import: `from aerpawlib.v2 import Drone`.
+
+### `await takeoff(altitude, min_alt_tolerance=0.95)`
+
+Command the drone to take off and wait until the target altitude is reached.
+
+<ParamField path="altitude" type="float" required>
+  Target relative altitude in metres above the home point.
+</ParamField>
+<ParamField path="min_alt_tolerance" type="float">
+  Fraction of the target altitude that must be reached before takeoff is
+  considered complete. Defaults to `0.95`.
+</ParamField>
+
+Raises `TakeoffError` on MAVSDK failure.
+
+### `await land()`
+
+Command the drone to land and wait for disarm. Raises `LandingError` on failure or timeout.
+
+### `await return_to_launch()`
+
+Command RTL and wait for disarm. Raises `RTLError` on failure or timeout.
+
+### `await goto_coordinates(coordinates, tolerance=2.0, target_heading=None, timeout=300, blocking=True)`
+
+Fly to the given coordinates.
+
+<ParamField path="coordinates" type="Coordinate" required>
+  Target position (lat, lon, relative alt in metres).
+</ParamField>
+<ParamField path="tolerance" type="float">
+  Arrival radius in metres. Defaults to `2.0`.
+</ParamField>
+<ParamField path="target_heading" type="Optional[float]">
+  Optional heading in degrees to face before navigating.
+</ParamField>
+<ParamField path="timeout" type="float">
+  Maximum seconds to wait when `blocking=True`. Defaults to `300`.
+</ParamField>
+<ParamField path="blocking" type="bool">
+  If `True` (default), awaits arrival before returning and returns `None`.
+  If `False`, returns a `VehicleTask` handle immediately.
+</ParamField>
+
+<ResponseField name="return" type="None | VehicleTask">
+  `None` when `blocking=True`; a `VehicleTask` when `blocking=False`.
+</ResponseField>
+
+Raises `NavigationError` on MAVSDK failure; `TimeoutError` when blocking and arrival takes longer than `timeout`.
+
+<Tabs>
+  <Tab title="Blocking">
+    ```python
+    await drone.goto_coordinates(Coordinate(35.727, -78.696, 20))
+    # returns when the drone arrives
+    ```
+  </Tab>
+  <Tab title="Non-blocking">
+    ```python
+    handle = await drone.goto_coordinates(target, blocking=False)
+    while not handle.is_done():
+        print(f"Progress: {handle.progress:.0%}")
+        await asyncio.sleep(1)
+    await handle.wait_done()  # re-raises any error
+    ```
+  </Tab>
+</Tabs>
+
+### `await set_heading(heading, blocking=True, lock_in=True)`
+
+Command the drone to face a given heading.
+
+<ParamField path="heading" type="Optional[float]" required>
+  Target heading in degrees (0–360). Pass `None` to clear the locked heading.
+</ParamField>
+<ParamField path="blocking" type="bool">
+  If `True` (default), wait until the heading is reached.
+</ParamField>
+<ParamField path="lock_in" type="bool">
+  If `True` (default), store the heading so subsequent `goto_coordinates`
+  commands maintain it.
+</ParamField>
+
+### `await set_velocity(velocity, global_relative=True, duration=None)`
+
+Enter offboard mode and send a velocity setpoint.
+
+<ParamField path="velocity" type="VectorNED" required>
+  Desired velocity in the NED frame (m/s).
+</ParamField>
+<ParamField path="global_relative" type="bool">
+  If `True` (default), the vector is in the global NED frame. If `False`, it is
+  rotated by the drone's current heading first.
+</ParamField>
+<ParamField path="duration" type="Optional[float]">
+  Hold the velocity for this many seconds then stop. If `None`, the velocity
+  runs until the next movement command.
+</ParamField>
+
+Raises `VelocityError` if offboard mode cannot be started.
+
+### `await stop_velocity()`
+
+Stop the active velocity command and exit offboard mode.
+
+---
+
+## VehicleTask
+
+`VehicleTask` is the handle returned by `goto_coordinates(blocking=False)`. Import: `from aerpawlib.v2 import VehicleTask` or `from aerpawlib.v2.vehicle.base import VehicleTask`.
+
+<ResponseField name="progress" type="float">
+  Completion estimate from `0.0` (start) to `1.0` (arrived).
+</ResponseField>
+
+#### `is_done() -> bool`
+
+`True` when the command has completed (success, error, or cancelled).
+
+#### `is_cancelled() -> bool`
+
+`True` after `cancel()` has been called.
+
+#### `cancel()`
+
+Request cancellation. On a `Drone`, triggers RTL; on a `Rover`, triggers hold.
+
+#### `await wait_done()`
+
+Wait until the command finishes. Re-raises any error that occurred during navigation.
+
+```python
+handle = await drone.goto_coordinates(target, blocking=False)
+print(handle.progress)     # 0.0 – 1.0
+handle.cancel()            # stop and RTL
+await handle.wait_done()   # raises NavigationError if something went wrong
+```
+
+---
+
+## Rover
+
+`Rover` is the ground-vehicle variant. It shares the full `Vehicle` interface with the following differences:
+
+| Feature | Drone | Rover |
+|---------|-------|-------|
+| Arrival distance | 3D (Haversine + altitude) | 2D ground distance only |
+| Default tolerance | `2.0` m | `2.1` m |
+| `takeoff` / `land` | Yes | **No** |
+| `return_to_launch` | Yes | **No** |
+| `set_heading` | Yes | **No** |
+| `stop_velocity` | Yes | **No** |
+| Mode before arming | Automatic | Switches to ArduPilot GUIDED mode automatically |
+| `set_velocity` down component | Sent to autopilot | **Zeroed** (rovers don't fly) |
+
+### `await goto_coordinates(coordinates, tolerance=2.1, target_heading=None, timeout=300, blocking=True)`
+
+Navigate to a position using 2D ground-distance arrival.
+
+<ParamField path="coordinates" type="Coordinate" required>
+  Target position.
+</ParamField>
+<ParamField path="tolerance" type="float">
+  Arrival radius in metres (ground distance). Defaults to `2.1`.
+</ParamField>
+<ParamField path="target_heading" type="Optional[float]">
+  Accepted for API parity with `Drone`; ignored by the rover.
+</ParamField>
+<ParamField path="timeout" type="float">
+  Maximum seconds to wait. Defaults to `300`.
+</ParamField>
+<ParamField path="blocking" type="bool">
+  `True` (default) awaits arrival. `False` returns a `VehicleTask` immediately.
+  Cancelling a rover task triggers a `hold` command instead of RTL.
+</ParamField>
+
+### `await set_velocity(velocity_vector, global_relative=True, duration=None)`
+
+Set rover velocity. The `down` component of `velocity_vector` is always zeroed.
+
+```python
+from aerpawlib.v2 import BasicRunner, Rover, entrypoint
+
+class GroundMission(BasicRunner):
+    @entrypoint
+    async def run(self, rover: Rover):
+        await rover.goto_coordinates(Coordinate(35.7275, -78.696, 0))
+        await rover.set_velocity(VectorNED(2, 0, 0), duration=5)
+```
+
+---
+
+## DummyVehicle
+
+`DummyVehicle` implements the full `Vehicle` interface but performs no real MAVSDK calls. Useful for dry-run testing of complete runner pipelines.
+
+```python
+from aerpawlib.v2 import DummyVehicle
+
+vehicle = await DummyVehicle.connect()
+# goto_coordinates, can_takeoff, etc. all succeed silently
+```
+
+`DummyVehicle.connect()` accepts the same arguments as `Vehicle.connect()` but ignores them all — no network connection is opened.
+
+<Note>
+  `DummyVehicle` starts with pre-set NCSU coordinates, 100 % battery, GPS fix 3, and `_will_arm = False` so runners do not block waiting for arm.
+</Note>

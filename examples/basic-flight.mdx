@@ -1,0 +1,367 @@
+---
+title: "Basic flight examples"
+description: "Square patterns, figure-8s, and velocity control — the simplest complete missions in aerpawlib."
+---
+
+These examples show the `BasicRunner` pattern: a single `@entrypoint` async function that executes a mission from takeoff to landing. They are the recommended starting point for new scripts.
+
+<Tabs>
+  <Tab title="v1 API">
+
+    ## basic_example.py — square flight
+
+    Takes off to 10 m, flies a 10 m × 10 m square, returns to the start position, and lands.
+
+    ```bash
+    aerpawlib --api-version v1 --script examples/v1/basic_example.py \
+        --vehicle drone --conn udp://127.0.0.1:14550
+    ```
+
+    ```python
+    """
+    Basic v1 API Example - Square Pattern Flight
+
+    This script demonstrates the v1 API with a simple mission:
+    1. Take off to 10 meters
+    2. Fly in a square pattern (10m x 10m)
+    3. Return to start and land
+
+    Run with:
+        aerpawlib --api-version v1 --script examples/v1/basic_example.py \\
+            --vehicle drone --conn udp:127.0.0.1:14550
+    """
+
+    from aerpawlib.v1.runner import BasicRunner, entrypoint
+    from aerpawlib.v1.util import VectorNED
+    from aerpawlib.v1.vehicle import Drone
+
+
+    class SquareFlight(BasicRunner):
+        """Fly in a square pattern."""
+
+        @entrypoint
+        async def run(self, drone: Drone):
+            # Configuration
+            takeoff_altitude = 10  # meters
+            square_size = 10  # meters
+
+            print(f"[example] Starting square flight mission")
+            print(f"[example] Takeoff altitude: {takeoff_altitude}m")
+            print(f"[example] Square size: {square_size}m x {square_size}m")
+
+            # Take off
+            print(f"[example] Taking off to {takeoff_altitude}m...")
+            await drone.takeoff(takeoff_altitude)
+            print(
+                f"[example] Takeoff complete, altitude: {drone.position.alt:.1f}m"
+            )
+
+            # Save starting position
+            start_position = drone.position
+            print(f"[example] Start position: {start_position}")
+
+            # Fly square pattern: North -> East -> South -> West -> Back to start
+            waypoints = [
+                ("North", VectorNED(square_size, 0, 0)),
+                ("East", VectorNED(0, square_size, 0)),
+                ("South", VectorNED(-square_size, 0, 0)),
+                ("West", VectorNED(0, -square_size, 0)),
+            ]
+
+            current_position = start_position
+            for direction, offset in waypoints:
+                target = current_position + offset
+                print(f"[example] Flying {direction} to {target}")
+                await drone.goto_coordinates(target)
+                current_position = target
+                print(f"[example] Arrived at {direction} waypoint")
+
+            # Return to start position
+            print(f"[example] Returning to start position...")
+            await drone.goto_coordinates(start_position)
+            print(f"[example] Back at start position")
+
+            # Land
+            print(f"[example] Landing...")
+            await drone.land()
+            print(f"[example] Mission complete!")
+    ```
+
+    ## basic_runner.py — minimal runner
+
+    The simplest possible aerpawlib script. Useful as a template when building a new mission from scratch.
+
+    ```bash
+    aerpawlib --api-version v1 --script examples/v1/basic_runner.py \
+        --vehicle drone --conn udp://127.0.0.1:14550
+    ```
+
+    ```python
+    """
+    Example of a script that has a single entry point that doesn't use any kind of
+    special Runner.
+    """
+
+    from aerpawlib.v1.runner import BasicRunner, entrypoint
+    from aerpawlib.v1.util import VectorNED
+    from aerpawlib.v1.vehicle import Drone
+
+
+    class MyScript(BasicRunner):
+        @entrypoint
+        async def do_stuff(self, drone: Drone):
+            # take off to 10m
+            await drone.takeoff(10)
+
+            # fly north 10m
+            await drone.goto_coordinates(drone.position + VectorNED(10, 0))
+
+            # land
+            await drone.land()
+    ```
+
+    ## figure_eight.py — figure-8 pattern
+
+    Generates a figure-8 waypoint path using trigonometry. Accepts `--radius` and `--altitude` arguments to customise the pattern at runtime.
+
+    ```bash
+    aerpawlib --api-version v1 --script examples/v1/figure_eight.py \
+        --vehicle drone --conn udp://127.0.0.1:14550 \
+        --radius 20 --altitude 15
+    ```
+
+    ```python
+    """
+    v1 API Example - Figure 8 Pattern
+
+    This script demonstrates complex flight patterns using coordinate math.
+    Flies a figure-8 pattern using waypoints.
+
+    Run with:
+        aerpawlib --api v1 --script examples/v1/figure_eight.py \\
+            --vehicle drone --conn udp:127.0.0.1:14550
+    """
+
+    import math
+    from argparse import ArgumentParser
+    from typing import List
+
+    from aerpawlib.v1.runner import BasicRunner, entrypoint
+    from aerpawlib.v1.util import VectorNED, Coordinate
+    from aerpawlib.v1.vehicle import Drone
+
+    # Configuration
+    FLIGHT_ALT = 15  # meters
+    LOOP_RADIUS = 20  # meters (radius of each loop)
+    NUM_WAYPOINTS = 16  # points per loop
+
+
+    class FigureEight(BasicRunner):
+        """Fly a figure-8 pattern."""
+
+        _radius: float = LOOP_RADIUS
+        _altitude: float = FLIGHT_ALT
+        _waypoints_per_loop: int = NUM_WAYPOINTS
+
+        def initialize_args(self, extra_args: List[str]):
+            """Parse custom arguments."""
+            parser = ArgumentParser()
+            parser.add_argument(
+                "--radius",
+                type=float,
+                default=LOOP_RADIUS,
+                help="Loop radius in meters",
+            )
+            parser.add_argument(
+                "--altitude",
+                type=float,
+                default=FLIGHT_ALT,
+                help="Flight altitude in meters",
+            )
+            args, _ = parser.parse_known_args(extra_args)
+
+            self._radius = args.radius
+            self._altitude = args.altitude
+            print(
+                f"[example] Figure-8 config: radius={self._radius}m, alt={self._altitude}m"
+            )
+
+        def _generate_figure_8_waypoints(
+            self, center: Coordinate
+        ) -> List[Coordinate]:
+            """Generate waypoints for a figure-8 pattern."""
+            waypoints = []
+
+            # First loop (north of center)
+            loop1_center = center + VectorNED(self._radius, 0, 0)
+            for i in range(self._waypoints_per_loop):
+                angle = (2 * math.pi * i) / self._waypoints_per_loop
+                offset = VectorNED(
+                    self._radius * math.cos(angle),
+                    self._radius * math.sin(angle),
+                    0,
+                )
+                waypoints.append(loop1_center + offset)
+
+            # Second loop (south of center, traced in opposite direction)
+            loop2_center = center + VectorNED(-self._radius, 0, 0)
+            for i in range(self._waypoints_per_loop):
+                # Reverse direction for second loop
+                angle = -(2 * math.pi * i) / self._waypoints_per_loop
+                offset = VectorNED(
+                    self._radius * math.cos(angle),
+                    self._radius * math.sin(angle),
+                    0,
+                )
+                waypoints.append(loop2_center + offset)
+
+            return waypoints
+
+        @entrypoint
+        async def run(self, drone: Drone):
+            """Execute the figure-8 pattern."""
+            print(f"[example] Taking off to {self._altitude}m...")
+            await drone.takeoff(self._altitude)
+
+            center = drone.position
+            print(f"[example] Center position: {center}")
+
+            # Generate waypoints
+            waypoints = self._generate_figure_8_waypoints(center)
+            print(f"[example] Generated {len(waypoints)} waypoints")
+
+            # Fly the pattern
+            for i, wp in enumerate(waypoints):
+                # Set altitude
+                target = Coordinate(wp.lat, wp.lon, self._altitude)
+
+                # Calculate progress
+                loop_num = 1 if i < self._waypoints_per_loop else 2
+                wp_in_loop = i % self._waypoints_per_loop + 1
+
+                print(
+                    f"[example] Loop {loop_num}, waypoint {wp_in_loop}/{self._waypoints_per_loop}"
+                )
+                await drone.goto_coordinates(target, tolerance=2)
+
+            # Return to center
+            print("[example] Returning to center...")
+            await drone.goto_coordinates(center, tolerance=2)
+
+            # Land
+            print("[example] Landing...")
+            await drone.land()
+            print("[example] Figure-8 complete!")
+    ```
+
+  </Tab>
+  <Tab title="v2 API">
+
+    ## basic_example.py — square flight
+
+    The same 10 m × 10 m square pattern rewritten using the v2 API. Imports are consolidated into a single `aerpawlib.v2` namespace and the connection string format changes to `udpin://`.
+
+    ```bash
+    aerpawlib --api-version v2 --script examples/v2/basic_example.py \
+        --vehicle drone --conn udpin://127.0.0.1:14550
+    ```
+
+    ```python
+    """
+    Basic v2 API Example - Square Pattern Flight
+
+    Run with:
+        aerpawlib --api-version v2 --script examples/v2/basic_example.py \\
+            --vehicle drone --conn udpin://127.0.0.1:14550
+    """
+    from aerpawlib.v2 import BasicRunner, Drone, VectorNED, entrypoint
+
+
+    class SquareFlight(BasicRunner):
+        """Fly in a square pattern."""
+
+        @entrypoint
+        async def run(self, drone: Drone):
+            takeoff_altitude = 10
+            square_size = 10
+
+            print("[example] Starting square flight mission")
+            await drone.takeoff(altitude=takeoff_altitude)
+            print(f"[example] Takeoff complete, altitude: {drone.position.alt:.1f}m")
+
+            start_position = drone.position
+            waypoints = [
+                ("North", VectorNED(square_size, 0, 0)),
+                ("East", VectorNED(0, square_size, 0)),
+                ("South", VectorNED(-square_size, 0, 0)),
+                ("West", VectorNED(0, -square_size, 0)),
+            ]
+
+            current_position = start_position
+            for direction, offset in waypoints:
+                target = current_position + offset
+                print(f"[example] Flying {direction} to {target}")
+                await drone.goto_coordinates(target)
+                current_position = target
+
+            print("[example] Returning to start...")
+            await drone.goto_coordinates(start_position)
+            print("[example] Landing...")
+            await drone.land()
+            print("[example] Mission complete!")
+    ```
+
+    ## velocity_example.py — velocity control
+
+    Demonstrates `set_velocity` for manual flight control. After takeoff the drone hovers, moves north at 2 m/s for 3 seconds, stops, then lands.
+
+    ```bash
+    aerpawlib --api-version v2 --script examples/v2/velocity_example.py \
+        --vehicle drone --conn udpin://127.0.0.1:14550
+    ```
+
+    ```python
+    """
+    Velocity control v2 Example - Drone using set_velocity for manual flight.
+
+    Run with:
+        aerpawlib --api-version v2 --script examples/v2/velocity_example.py \\
+            --vehicle drone --conn udpin://127.0.0.1:14550
+    """
+
+    import asyncio
+
+    from aerpawlib.v2 import BasicRunner, Drone, VectorNED, entrypoint
+
+
+    class VelocityControlDemo(BasicRunner):
+        """Demonstrate velocity control: hover, move north, stop."""
+
+        @entrypoint
+        async def run(self, drone: Drone):
+            await drone.takeoff(altitude=10)
+            print("[example] Hovering...")
+            await drone.set_velocity(VectorNED(0, 0, 0), duration=2.0)
+            print("[example] Moving north at 2 m/s...")
+            await drone.set_velocity(VectorNED(2, 0, 0), duration=3.0)
+            print("[example] Stopping...")
+            await drone.set_velocity(VectorNED(0, 0, 0), duration=1.0)
+            await asyncio.sleep(0.5)
+            print("[example] Landing...")
+            await drone.land()
+            print("[example] Done")
+    ```
+
+    <Tip>
+      `VectorNED(north, east, down)` — positive north moves forward, positive down descends. Pass `down=0` to maintain altitude while commanding horizontal velocity.
+    </Tip>
+
+  </Tab>
+</Tabs>
+
+## Key concepts
+
+- **`BasicRunner`** is the simplest runner type. Subclass it and annotate exactly one method with `@entrypoint`.
+- **`VectorNED`** expresses offsets in the North/East/Down frame. Add it to a `Coordinate` or `drone.position` to produce the target coordinate.
+- **`goto_coordinates`** blocks until the vehicle reaches the target (within the default tolerance). Pass `tolerance=<meters>` to override.
+- **`initialize_args`** receives leftover CLI arguments as a list of strings, letting you add custom flags without touching the aerpawlib launcher.

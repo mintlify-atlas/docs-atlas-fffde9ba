@@ -1,0 +1,161 @@
+---
+title: "v2 API overview"
+description: "Async-first vehicle control API with a single event loop, native telemetry, and built-in safety integration."
+---
+
+v2 is a modern, async-first replacement for the v1 API. It eliminates the dual-loop architecture, `ThreadSafeValue` overhead, and function-attribute runners in favour of a single event loop, native async telemetry, descriptor-based decorators, and built-in safety and connection handling.
+
+## Architecture
+
+| Concern | v1 | v2 |
+|---------|----|----|   
+| Event loop | Dual-loop (background thread + main) | Single `asyncio` event loop |
+| Telemetry | `ThreadSafeValue` wrappers | Plain attributes updated by async subscriptions |
+| Runner definition | Function attributes | Config dataclasses + descriptor decorators |
+| Non-blocking commands | Not supported | `VehicleTask` with `progress`, `cancel()`, `wait_done()` |
+| Safety integration | Manual | `SafetyCheckerClient` passed to `connect()` |
+| Connection handling | External | Built-in `ConnectionHandler` |
+
+## Quick start
+
+```python
+from aerpawlib.v2 import BasicRunner, Drone, VectorNED, entrypoint
+
+class MyMission(BasicRunner):
+    @entrypoint
+    async def run(self, drone: Drone):
+        await drone.takeoff(altitude=10)
+        await drone.goto_coordinates(drone.position + VectorNED(20, 0))
+        await drone.land()
+```
+
+Run with:
+
+```bash
+aerpawlib --api-version v2 --script my_mission.py --vehicle drone --conn udpin://127.0.0.1:14550
+```
+
+## Full export list
+
+Everything below is importable directly from `aerpawlib.v2`:
+
+```python
+from aerpawlib.v2 import (
+    # Platform
+    AERPAW_Platform,
+    constants,
+
+    # Vehicles
+    Vehicle,
+    Drone,
+    Rover,
+    DummyVehicle,
+    VehicleTask,
+
+    # Types
+    Coordinate,
+    VectorNED,
+    Battery,
+    GPSInfo,
+    Attitude,
+
+    # Runners
+    Runner,
+    BasicRunner,
+    BasicRunnerConfig,
+    StateMachine,
+    StateMachineConfig,
+    ZmqStateMachine,
+    ZmqStateMachineConfig,
+    StateSpec,
+
+    # Decorators
+    entrypoint,
+    state,
+    timed_state,
+    background,
+    at_init,
+    expose_zmq,
+    expose_field_zmq,
+
+    # Plan
+    Waypoint,
+    read_from_plan,
+    read_from_plan_complete,
+    get_location_from_waypoint,
+
+    # Geofence
+    read_geofence,
+    inside,
+    do_intersect,
+
+    # Protocols
+    GPSProtocol,
+    VehicleProtocol,
+
+    # External process
+    ExternalProcess,
+
+    # Testing
+    MockVehicle,
+
+    # ZMQ utilities
+    run_zmq_proxy,
+    check_zmq_proxy_reachable,
+
+    # Exceptions (all classes)
+    AerpawlibError,
+    AerpawConnectionError,
+    ConnectionTimeoutError,
+    HeartbeatLostError,
+    PortInUseError,
+    CommandError,
+    ArmError,
+    DisarmError,
+    TakeoffError,
+    LandingError,
+    NavigationError,
+    VelocityError,
+    RTLError,
+    StateError,
+    NotArmableError,
+    NotConnectedError,
+    UnexpectedDisarmError,
+    RunnerError,
+    NoEntrypointError,
+    NoInitialStateError,
+    MultipleInitialStatesError,
+    InvalidStateError,
+    InvalidStateNameError,
+    PlanError,
+)
+```
+
+Safety classes live in the `aerpawlib.v2.safety` sub-module:
+
+```python
+from aerpawlib.v2.safety import SafetyCheckerClient, NoOpSafetyChecker, PreflightChecks, ConnectionHandler
+```
+
+## Sub-pages
+
+<CardGroup cols={2}>
+  <Card title="Vehicles" href="/api/v2/vehicles">
+    `Vehicle`, `Drone`, `Rover`, `DummyVehicle`, and `VehicleTask`.
+  </Card>
+  <Card title="Runners" href="/api/v2/runners">
+    `BasicRunner`, `StateMachine`, `ZmqStateMachine`, and all decorators.
+  </Card>
+  <Card title="Types" href="/api/v2/types">
+    `Coordinate`, `VectorNED`, `Battery`, `GPSInfo`, `Attitude`, plan and geofence utilities.
+  </Card>
+  <Card title="Safety" href="/api/v2/safety">
+    `SafetyCheckerClient`, `NoOpSafetyChecker`, and CLI integration.
+  </Card>
+  <Card title="Testing" href="/api/v2/testing">
+    `MockVehicle` and `DummyVehicle` for unit and pipeline tests.
+  </Card>
+  <Card title="Exceptions" href="/api/v2/exceptions">
+    Full exception hierarchy with codes and severity levels.
+  </Card>
+</CardGroup>

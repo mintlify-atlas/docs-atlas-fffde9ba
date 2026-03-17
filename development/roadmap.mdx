@@ -1,0 +1,49 @@
+---
+title: "Roadmap"
+description: "Planned features and improvements for future aerpawlib releases, organized by API version."
+---
+
+This page tracks the current state of planned work and recently completed items for both the v1 and v2 APIs.
+
+## v1 API (stable, no breaking changes)
+
+<Info>
+  The v1 API is stable. No breaking changes will be introduced. Work in this area is limited to bug fixes and test infrastructure.
+</Info>
+
+| Status | Item |
+|---|---|
+| Open | Integration tests require a running SITL instance and are not executed in CI. They must be verified manually before each release: `pytest tests/integration/ --no-sitl` |
+| Done | Rover `goto` commands fixed: raw MAVLink now forces ArduPilot Rover into GUIDED mode before arming, resolving an issue where `goto` commands were only accepted from the MAVProxy console |
+| Done | `ZmqStateMachine` race condition fixed: message handling is now sequential (inline `await`) instead of spawning concurrent tasks, eliminating ordering hazards on shared state |
+| Done | `ZmqStateMachine` malformed-message `KeyError` fixed: all incoming ZMQ dict fields are now accessed via `.get()` with a warning log, matching v2 behavior |
+
+---
+
+## v2 API (active development)
+
+<Note>
+  v2 is under active development. New features, including `VehicleTask` and deeper safety integration, are being added here.
+</Note>
+
+| Status | Item |
+|---|---|
+| Open | Integration tests require a running SITL instance and are not executed in CI. They must be verified manually before each release: `pytest tests/integration/ --no-sitl` |
+| Done | Rover `goto` commands fixed: same GUIDED-mode fix applied as in v1 |
+| Done | `ZmqStateMachine` race condition and malformed-message handling fixed |
+
+---
+
+## Testing infrastructure
+
+Both v1 and v2 share the same open item for CI integration test coverage:
+
+<Warning>
+  Integration tests are excluded from CI because they require a running ArduPilot SITL instance. Before tagging a release, run the full integration suite manually:
+
+  ```bash
+  pytest tests/integration/ --no-sitl
+  ```
+
+  See the [Contributing](/development/contributing) page for setup instructions.
+</Warning>

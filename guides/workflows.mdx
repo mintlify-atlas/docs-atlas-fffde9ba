@@ -1,0 +1,275 @@
+---
+title: "Mission workflows"
+description: "Overview of all supported aerpawlib mission workflows: BasicRunner, StateMachine, background tasks, ExternalProcess, and ZMQ multi-vehicle coordination."
+---
+
+aerpawlib supports several mission patterns. Choose the one that fits the structure of your experiment.
+
+| Workflow | Runner class | Use case |
+|----------|-------------|----------|
+| Basic single-vehicle | `BasicRunner` + `@entrypoint` | Linear waypoint missions, demos |
+| State machine | `StateMachine` + `@state` | Multi-phase missions, patrol patterns |
+| State machine + background | `StateMachine` + `@background` | Logging, battery monitoring |
+| External process | `ExternalProcess` | Radio scripts, sensors, co-located tools |
+| Multi-vehicle ZMQ | `ZmqStateMachine` + `@expose_zmq` | Leader/follower, swarm coordination |
+
+---
+
+## BasicRunner
+
+The simplest workflow: define one `async` method decorated with `@entrypoint`. aerpawlib calls it once after the vehicle is ready.
+
+<Tabs>
+  <Tab title="v1">
+    ```python
+    from aerpawlib.v1 import Drone, Coordinate, BasicRunner, entrypoint
+
+    class SimpleMission(BasicRunner):
+        @entrypoint
+        async def run(self, vehicle: Drone):
+            await vehicle.takeoff(10)
+            target = Coordinate(35.7275, -78.6960, 10)
+            await vehicle.goto_coordinates(target)
+            await vehicle.land()
+    ```
+  </Tab>
+  <Tab title="v2">
+    ```python
+    from aerpawlib.v2 import BasicRunner, Drone, VectorNED, entrypoint
+
+    class SquareFlight(BasicRunner):
+        @entrypoint
+        async def run(self, drone: Drone):
+            await drone.takeoff(altitude=10)
+
+            start_position = drone.position
+            waypoints = [
+                ("North", VectorNED(10, 0, 0)),
+                ("East",  VectorNED(0, 10, 0)),
+                ("South", VectorNED(-10, 0, 0)),
+                ("West",  VectorNED(0, -10, 0)),
+            ]
+            current_position = start_position
+            for direction, offset in waypoints:
+                target = current_position + offset
+                await drone.goto_coordinates(target)
+                current_position = target
+
+            await drone.goto_coordinates(start_position)
+            await drone.land()
+    ```
+  </Tab>
+</Tabs>
+
+```bash
+aerpawlib --script my_mission.py --conn udp://127.0.0.1:14550 --vehicle drone
+```
+
+<Note>
+  Exactly one method in a `BasicRunner` subclass must be decorated with `@entrypoint`. aerpawlib raises an error if it finds zero or more than one.
+</Note>
+
+---
+
+## StateMachine
+
+For missions with distinct phases, conditional transitions, or loops. Each `@state` method returns the name of the next state to enter, or `None` to end.
+
+<Tabs>
+  <Tab title="v1">
+    ```python
+    from aerpawlib.v1 import Drone, StateMachine, state
+
+    class PatrolMission(StateMachine):
+        _waypoints = [
+            # populate with Coordinate objects
+        ]
+        _index = 0
+
+        @state(name="takeoff", first=True)
+        async def takeoff_state(self, vehicle: Drone):
+            await vehicle.takeoff(10)
+            return "patrol"
+
+        @state(name="patrol")
+        async def patrol_state(self, vehicle: Drone):
+            if self._index >= len(self._waypoints):
+                return "land"
+            await vehicle.goto_coordinates(self._waypoints[self._index])
+            self._index += 1
+            return "patrol"
+
+        @state(name="land")
+        async def land_state(self, vehicle: Drone):
+            await vehicle.land()
+            return None  # end
+    ```
+  </Tab>
+  <Tab title="v2">
+    ```python
+    from aerpawlib.v2 import Drone, StateMachine, VectorNED, state, timed_state
+
+    class SquareStateMachine(StateMachine):
+        def __init__(self):
+            super().__init__()
+            self._legs = [
+                VectorNED(10, 0, 0),
+                VectorNED(0, 10, 0),
+                VectorNED(-10, 0, 0),
+                VectorNED(0, -10, 0),
+            ]
+            self._current_leg = 0
+
+        @state(name="start", first=True)
+        async def start(self, drone: Drone):
+            return "take_off"
+
+        @state(name="take_off")
+        async def take_off(self, drone: Drone):
+            await drone.takeoff(altitude=10)
+            return "at_position"
+
+        @timed_state(name="at_position", duration=3)
+        async def at_position(self, drone: Drone):
+            start = drone.position
+            wp = start + self._legs[self._current_leg]
+            await drone.goto_coordinates(wp)
+            self._current_leg += 1
+            if self._current_leg >= len(self._legs):
+                return "land"
+            return "at_position"
+
+        @state(name="land")
+        async def land(self, drone: Drone):
+            await drone.land()
+            return None
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Exactly one state must have `first=True`. aerpawlib raises an error if zero or multiple first states are found.
+</Note>
+
+---
+
+## StateMachine with background tasks
+
+Decorate a method with `@background` to run it concurrently with the state machine. Background tasks run for the lifetime of the mission.
+
+<Tabs>
+  <Tab title="v1">
+    ```python
+    from aerpawlib.v1 import StateMachine, state, background
+    import asyncio
+
+    class LoggingMission(StateMachine):
+        @state(name="fly", first=True)
+        async def fly_state(self, vehicle):
+            await vehicle.goto_coordinates(target)
+            return None
+
+        @background
+        async def log_position(self, vehicle):
+            while True:
+                print(f"Position: {vehicle.position}")
+                await asyncio.sleep(1)
+    ```
+  </Tab>
+  <Tab title="v2">
+    ```python
+    from aerpawlib.v2 import Drone, StateMachine, VectorNED, background, state
+    import asyncio
+
+    class SquareStateMachine(StateMachine):
+        @background
+        async def log_position(self, drone: Drone):
+            """Background: log position every 2 seconds."""
+            while True:
+                pos = drone.position
+                print(f"[bg] Position: {pos.lat:.6f}, {pos.lon:.6f}, alt={pos.alt:.1f}m")
+                await asyncio.sleep(2)
+
+        @state(name="start", first=True)
+        async def start(self, drone: Drone):
+            return "take_off"
+
+        @state(name="take_off")
+        async def take_off(self, drone: Drone):
+            await drone.takeoff(altitude=10)
+            return "land"
+
+        @state(name="land")
+        async def land(self, drone: Drone):
+            await drone.land()
+            return None
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Common background task uses: position/telemetry logging, battery monitoring, OEO heartbeats, and coordinating with external processes.
+</Tip>
+
+---
+
+## ExternalProcess
+
+Spawn and interact with external processes (radio scripts, sensors, ping utilities) from within a mission script.
+
+```python
+from aerpawlib.v1 import ExternalProcess
+
+proc = ExternalProcess("my_script", params=["--arg", "value"])
+await proc.start()
+line = await proc.read_line()
+await proc.send_input("command\n")
+await proc.wait_until_terminated()
+```
+
+The example below (from `examples/v1/zmq_runner/leader.py`) uses `ExternalProcess` to run `ping` and parse latency from its output:
+
+```python
+import re
+from aerpawlib.v1.external import ExternalProcess
+
+_ping_regex = re.compile(
+    r".+icmp_seq=(?P<seq>\d+).+time=(?P<time>\d\.\d+) ms"
+)
+
+async def ping_latency(address: str, count: int):
+    ping = ExternalProcess("ping", params=["-c", str(count), address])
+    await ping.start()
+    latencies = []
+    buff = 1
+    while buff:
+        buff = await ping.wait_until_output(r"icmp_seq=")
+        if not buff:
+            break
+        ping_re_match = _ping_regex.match(buff[-1])
+        if ping_re_match is None:
+            continue
+        latencies.append(float(ping_re_match.group("time")))
+        if ping_re_match.group("seq") == str(count):
+            break
+    return sum(latencies) / len(latencies)
+```
+
+---
+
+## Multi-vehicle ZMQ coordination
+
+For coordinated missions across multiple vehicles. See the full guide at [Multi-vehicle coordination](/guides/multi-vehicle).
+
+```bash
+# Start proxy first
+aerpawlib --run-proxy
+
+# Leader
+aerpawlib --script leader.py --conn udp://127.0.0.1:14550 --vehicle drone \
+  --zmq-identifier leader --zmq-proxy-server 127.0.0.1
+
+# Follower
+aerpawlib --script follower.py --conn udp://127.0.0.1:14551 --vehicle drone \
+  --zmq-identifier follower --zmq-proxy-server 127.0.0.1
+```

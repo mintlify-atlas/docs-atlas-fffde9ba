@@ -1,0 +1,159 @@
+---
+title: "Exceptions"
+description: "Full exception hierarchy with error codes, severity levels, and handling examples."
+---
+
+All v2 exceptions derive from `AerpawlibError`. Each carries a human-readable `message`, a machine-readable `code`, a `severity`, and an optional `original_error`.
+
+## Exception hierarchy
+
+```
+AerpawlibError
+├── AerpawConnectionError          (code: CONNECTION_ERROR)
+│   ├── ConnectionTimeoutError     (code: CONNECTION_TIMEOUT)
+│   ├── HeartbeatLostError         (code: HEARTBEAT_LOST, severity: critical)
+│   └── PortInUseError             (code: PORT_IN_USE)
+├── CommandError                   (code: COMMAND_ERROR)
+│   ├── ArmError                   (code: ARM_ERROR)
+│   ├── DisarmError                (code: DISARM_ERROR)
+│   ├── TakeoffError               (code: TAKEOFF_ERROR)
+│   ├── LandingError               (code: LANDING_ERROR)
+│   ├── NavigationError            (code: NAVIGATION_ERROR)
+│   ├── VelocityError              (code: VELOCITY_ERROR)
+│   └── RTLError                   (code: RTL_ERROR)
+├── StateError                     (code: STATE_ERROR)
+│   ├── NotArmableError            (code: NOT_ARMABLE)
+│   ├── NotConnectedError          (code: NOT_CONNECTED)
+│   └── UnexpectedDisarmError      (code: UNEXPECTED_DISARM, severity: critical)
+├── RunnerError                    (code: RUNNER_ERROR)
+│   ├── NoEntrypointError          (code: NO_ENTRYPOINT)
+│   ├── NoInitialStateError        (code: NO_INITIAL_STATE)
+│   ├── MultipleInitialStatesError (code: MULTIPLE_INITIAL_STATES)
+│   ├── InvalidStateError          (code: INVALID_STATE)
+│   └── InvalidStateNameError      (code: INVALID_STATE_NAME)
+└── PlanError                      (code: PLAN_ERROR)
+```
+
+## Base class: AerpawlibError
+
+```python
+from aerpawlib.v2 import AerpawlibError
+```
+
+<ResponseField name="message" type="str">Human-readable description of the error.</ResponseField>
+<ResponseField name="code" type="str">Machine-readable error code string (e.g. `"TAKEOFF_ERROR"`).</ResponseField>
+<ResponseField name="severity" type="str">One of `"warning"`, `"error"`, or `"critical"`. Defaults to `"error"`.</ResponseField>
+<ResponseField name="original_error" type="Optional[Exception]">The underlying exception, if any.</ResponseField>
+
+## Severity levels
+
+| Severity | Meaning |
+|----------|--------|
+| `"warning"` | Non-fatal; operation may proceed |
+| `"error"` | Operation failed; mission may continue |
+| `"critical"` | Fatal; experiment should terminate immediately |
+
+Only two exceptions default to `"critical"`: `HeartbeatLostError` and `UnexpectedDisarmError`.
+
+## Connection exceptions
+
+### `AerpawConnectionError`
+
+Base for all connection errors. Raised directly when a connection string is malformed or the MAVSDK scheme is unsupported.
+
+### `ConnectionTimeoutError`
+
+Raised when no heartbeat is received within the configured timeout.
+
+<ResponseField name="timeout_seconds" type="float">How many seconds elapsed before the timeout.</ResponseField>
+
+### `HeartbeatLostError`
+
+Raised (severity `"critical"`) when the vehicle heartbeat is lost mid-flight.
+
+<ResponseField name="last_heartbeat_age" type="float">Seconds since the last heartbeat was received.</ResponseField>
+
+### `PortInUseError`
+
+Raised when the gRPC port for `mavsdk_server` is already in use.
+
+<ResponseField name="port" type="int">The conflicting port number.</ResponseField>
+
+## Command exceptions
+
+| Exception | Raised when |
+|-----------|------------|
+| `ArmError` | `arm()` MAVSDK call rejected |
+| `DisarmError` | `disarm()` MAVSDK call rejected |
+| `TakeoffError` | Takeoff command fails |
+| `LandingError` | Land command fails or times out waiting for disarm |
+| `NavigationError` | `goto_coordinates` MAVSDK call fails or arrival times out |
+| `VelocityError` | Offboard mode cannot be started for `set_velocity` |
+| `RTLError` | `return_to_launch` command fails or times out |
+
+## State exceptions
+
+### `NotArmableError`
+
+Raised when `set_armed(True)` is called but `vehicle.armable` is `False`.
+
+### `NotConnectedError`
+
+Raised when a command is attempted on a disconnected vehicle.
+
+### `UnexpectedDisarmError`
+
+Raised (severity `"critical"`) automatically by `BasicRunner` and `StateMachine` when the vehicle disarms unexpectedly during a mission (e.g. motor failsafe). Terminates the experiment cleanly.
+
+## Runner exceptions
+
+| Exception | Raised when |
+|-----------|------------|
+| `NoEntrypointError` | `BasicRunner` has no method marked with `@entrypoint` |
+| `NoInitialStateError` | `StateMachine` has no state with `first=True` |
+| `MultipleInitialStatesError` | More than one state has `first=True` |
+| `InvalidStateError` | A state method returns an unknown state name |
+| `InvalidStateNameError` | An empty string is passed to `@state` or `@expose_zmq` |
+
+`InvalidStateError` carries extra fields:
+
+<ResponseField name="state_name" type="str">The state name that was not found.</ResponseField>
+<ResponseField name="available_states" type="list">List of valid state names for this runner.</ResponseField>
+
+## PlanError
+
+Raised when a `.plan` file cannot be parsed (missing file, invalid JSON, wrong file type, or malformed item).
+
+## Exception handling example
+
+```python
+from aerpawlib.v2 import (
+    Drone,
+    TakeoffError,
+    NavigationError,
+    HeartbeatLostError,
+    UnexpectedDisarmError,
+    AerpawlibError,
+)
+
+try:
+    await drone.takeoff(10)
+except TakeoffError as e:
+    # e.code == "TAKEOFF_ERROR"
+    print(f"Takeoff failed [{e.code}]: {e.message}")
+    if e.original_error:
+        print(f"  caused by: {e.original_error}")
+except HeartbeatLostError as e:
+    # severity == "critical"; abort immediately
+    print(f"CRITICAL: heartbeat lost {e.last_heartbeat_age:.1f}s ago")
+    raise
+except AerpawlibError as e:
+    # catch-all for any other aerpawlib error
+    print(f"[{e.severity}] {e.code}: {e}")
+```
+
+<Warning>
+  `HeartbeatLostError` and `UnexpectedDisarmError` have severity `"critical"`.
+  Do not suppress them — allow them to propagate so the CLI runner can trigger
+  the emergency exit path.
+</Warning>

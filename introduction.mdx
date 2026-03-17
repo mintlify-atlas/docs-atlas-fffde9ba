@@ -1,0 +1,118 @@
+---
+title: "aerpawlib"
+description: "A Python library for controlling drones and ground vehicles within the AERPAW platform"
+---
+
+<img
+  className="block"
+  src="https://media.brand.dev/4456ce29-d627-4388-94b7-d3640cc0939c.png"
+  alt="AERPAW"
+  style={{ maxWidth: "200px", marginBottom: "2rem" }}
+/>
+
+# aerpawlib
+
+aerpawlib is a Python library for autonomous vehicle control within the [AERPAW](https://aerpaw.org) platform. It provides a unified interface for drones and ground vehicles via ArduPilot/MAVSDK, with scriptable missions, multi-vehicle coordination, and built-in safety validation.
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install aerpawlib and set up your development environment with ArduPilot SITL
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Write and run your first autonomous drone mission in minutes
+  </Card>
+  <Card title="API Reference (v2)" icon="code" href="/api/v2/overview">
+    Explore the modern async-first v2 API with full type signatures
+  </Card>
+  <Card title="API Reference (v1)" icon="book" href="/api/v1/overview">
+    Browse the stable v1 API with MAVSDK backend
+  </Card>
+</CardGroup>
+
+## What is aerpawlib?
+
+aerpawlib gives researchers and developers a high-level Python interface to control UAVs and ground vehicles in the AERPAW testbed. It abstracts over low-level MAVLink protocols and provides:
+
+- **Script-based missions** — write async Python, run with `aerpawlib --script`
+- **State machine execution** — model multi-phase missions as state graphs
+- **Multi-vehicle coordination** — synchronize drones and rovers over ZMQ
+- **Safety enforcement** — validate waypoints, altitude, and speed against KML geofences before commanding vehicles
+- **AERPAW integration** — hooks for OEO logging, checkpointing, and safety-pilot arming
+
+## Two API versions
+
+<Tabs>
+  <Tab title="v2 (recommended)">
+    The modern, async-first API. Single event loop, native async telemetry, descriptor-based decorators, non-blocking `VehicleTask` commands with progress and cancellation.
+
+    ```python
+    from aerpawlib.v2 import BasicRunner, Drone, VectorNED, entrypoint
+
+    class MyMission(BasicRunner):
+        @entrypoint
+        async def run(self, drone: Drone):
+            await drone.takeoff(altitude=10)
+            await drone.goto_coordinates(drone.position + VectorNED(20, 0))
+            await drone.land()
+    ```
+
+    ```bash
+    aerpawlib --api-version v2 --script my_mission.py --vehicle drone --conn udpin://127.0.0.1:14550
+    ```
+  </Tab>
+  <Tab title="v1 (stable)">
+    Backward-compatible API with the same interface as the legacy aerpawlib. Uses MAVSDK as the backend. Existing scripts work unchanged.
+
+    ```python
+    from aerpawlib.v1 import Drone, Coordinate, BasicRunner, entrypoint
+
+    class MyMission(BasicRunner):
+        @entrypoint
+        async def run(self, vehicle):
+            await vehicle.takeoff(10)
+            target = Coordinate(35.7275, -78.6960, 10)
+            await vehicle.goto_coordinates(target)
+            await vehicle.land()
+    ```
+
+    ```bash
+    aerpawlib --script my_mission.py --conn udp://127.0.0.1:14550 --vehicle drone
+    ```
+  </Tab>
+</Tabs>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Vehicle control" icon="helicopter">
+    Unified API for `Drone` (multicopter) and `Rover` (ground vehicle). Takeoff, land, navigate to coordinates, set velocity, and control heading.
+  </Card>
+  <Card title="Mission runners" icon="play">
+    `BasicRunner` for linear missions and `StateMachine` for phase-based missions with transitions and background tasks.
+  </Card>
+  <Card title="Safety checker" icon="shield-check">
+    KML-based geofence validation. Pre-validate takeoff, waypoints, and speed before commanding vehicles.
+  </Card>
+  <Card title="Multi-vehicle ZMQ" icon="network-wired">
+    Coordinate fleets via ZMQ pub/sub. Expose states and fields for cross-vehicle transitions and queries.
+  </Card>
+  <Card title="QGroundControl plans" icon="map">
+    Load `.plan` files from QGroundControl for pre-defined survey and waypoint missions.
+  </Card>
+  <Card title="SITL simulation" icon="computer">
+    Built-in ArduPilot SITL support for local development and integration testing without hardware.
+  </Card>
+</CardGroup>
+
+## Vehicle types
+
+| Vehicle | Description | v1 | v2 |
+|---------|-------------|----|----|
+| `Drone` | Multicopter with takeoff, land, 3D movement | ✓ | ✓ |
+| `Rover` | Ground vehicle with 2D movement | ✓ | ✓ |
+| `DummyVehicle` | No-op vehicle for scripts without hardware | ✓ | ✓ |
+| `MockVehicle` | In-memory test double for unit tests | — | ✓ |
+
+## License
+
+MIT License. See [GitHub](https://github.com/aerpaw/aerpawlib) for source code and issue tracking.

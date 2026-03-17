@@ -1,0 +1,281 @@
+---
+title: "Contributing"
+description: "How to set up a development environment, run tests, and contribute to the aerpawlib codebase."
+---
+
+## Project structure
+
+```
+aerpawlib-vehicle-control/
+├── aerpawlib/
+│   ├── __main__.py          # CLI entry point (aerpawlib)
+│   ├── v1/                  # v1 API (MAVSDK, DroneKit-compatible)
+│   │   ├── __init__.py
+│   │   ├── aerpaw.py        # AERPAW platform (OEO, checkpoints)
+│   │   ├── constants.py     # Timing, limits, config
+│   │   ├── exceptions.py    # Exception hierarchy
+│   │   ├── external.py      # ExternalProcess
+│   │   ├── helpers.py       # wait_for_condition, validate_*, ThreadSafeValue
+│   │   ├── log.py           # Logging configuration
+│   │   ├── runner.py        # Runner, BasicRunner, StateMachine, ZmqStateMachine
+│   │   ├── safety.py        # SafetyCheckerServer, SafetyCheckerClient
+│   │   ├── safetyChecker.py # Deprecation alias for safety
+│   │   ├── util.py          # Coordinate, VectorNED, geofence, plan parsing
+│   │   ├── vehicle.py       # Re-exports Vehicle, Drone, Rover
+│   │   ├── zmqutil.py       # ZMQ proxy
+│   │   └── vehicles/
+│   │       ├── core_vehicle.py  # Vehicle base, telemetry, connection
+│   │       ├── drone.py         # Drone implementation
+│   │       └── rover.py         # Rover implementation
+│   └── v2/                  # v2 API (modern, async-first)
+│       └── ...
+├── docs/                    # Documentation
+├── examples/                # Example scripts
+├── tests/
+│   ├── conftest.py          # Fixtures, SITL manager
+│   ├── unit/                # Unit tests (no SITL)
+│   └── integration/         # Integration tests (SITL)
+├── scripts/
+│   ├── setup_sitl.py        # Clone and compile ArduPilot SITL
+│   ├── run_example.py       # Run an example with a bundled SITL
+│   └── install_dev.sh       # Full dev setup in one command
+├── pyproject.toml
+└── README.md
+```
+
+---
+
+## Development environment setup
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/quantumbagel/aerpawlib.git
+    cd aerpawlib
+    ```
+  </Step>
+
+  <Step title="Install with development dependencies">
+    This installs the package in editable mode along with `pytest`, `pytest-asyncio`, `psutil`, and the SITL dependencies.
+
+    ```bash
+    pip install -e .[dev]
+    ```
+
+    Alternatively, use the helper script to install dependencies and set up SITL in one step:
+
+    ```bash
+    ./scripts/install_dev.sh
+    ```
+  </Step>
+
+  <Step title="Set up ArduPilot SITL">
+    The `aerpawlib-setup-sitl` command clones ArduPilot, initializes submodules, and compiles SITL for Copter and Rover. It targets the `Copter-4.6.3` branch by default.
+
+    ```bash
+    aerpawlib-setup-sitl
+    ```
+
+    To only clone without compiling:
+
+    ```bash
+    aerpawlib-setup-sitl --skip-compile
+    ```
+
+    After setup, `sim_vehicle.py` will be at `./ardupilot/Tools/autotest/sim_vehicle.py`.
+  </Step>
+
+  <Step title="Set the ARDUPILOT_HOME environment variable (optional)">
+    By default pytest and the SITL scripts expect ArduPilot at `./ardupilot`. Override this with:
+
+    ```bash
+    export ARDUPILOT_HOME=/path/to/ardupilot
+    ```
+  </Step>
+
+  <Step title="Verify the setup">
+    Run the unit tests to confirm everything is installed correctly:
+
+    ```bash
+    pytest tests/unit/ -v
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Running tests
+
+### Unit tests (no SITL required)
+
+Unit tests cover utilities, helpers, exceptions, runners, and external process handling. They have no external dependencies and run in CI.
+
+```bash
+pytest tests/unit/ -v
+# or via marker
+pytest -m unit -v
+```
+
+### Integration tests (SITL required)
+
+Integration tests require a running ArduPilot SITL instance. By default, pytest starts and stops SITL automatically.
+
+```bash
+# pytest manages SITL lifecycle
+pytest tests/integration/ -v
+
+# Use an externally running SITL (start sim_vehicle.py manually first)
+pytest tests/integration/ -v --no-sitl
+```
+
+<Warning>
+  Integration tests are **not executed in CI**. They must be verified manually before each release by running `pytest tests/integration/ --no-sitl` against a live SITL instance.
+</Warning>
+
+### Verbose SITL output
+
+```bash
+SITL_VERBOSE=1 pytest tests/integration/ -v
+```
+
+### Full test suite
+
+```bash
+pytest tests/ -v
+```
+
+### pytest configuration
+
+The `pytest.ini` configures test discovery, markers, and async mode:
+
+- `asyncio_mode = auto` — all `async def test_*` functions run automatically.
+- Markers: `unit` (no external deps), `integration` (requires SITL).
+- Default options include `-v`, `--tb=short`, `-ra`, and `INFO`-level log output.
+
+---
+
+## Coding conventions
+
+### Python version
+
+- Minimum: Python 3.9 (`requires-python = ">=3.9"` in `pyproject.toml`).
+- Use `Optional[X]` instead of `X | None` for 3.9 compatibility.
+
+### Formatting
+
+- Black with a 79-character line length targeting py39–py312.
+- Configuration lives in `pyproject.toml`.
+
+### Imports
+
+- Prefer absolute imports: `from aerpawlib.v1 import X`.
+- v1 re-exports all symbols from submodules via `__init__.py`.
+
+### Logging
+
+Use `get_logger(LogComponent.X)` from `aerpawlib.log`. Available components include `VEHICLE`, `DRONE`, `ROVER`, `RUNNER`, `SAFETY`, `AERPAW`, and others.
+
+```python
+from aerpawlib.log import get_logger, LogComponent
+
+logger = get_logger(LogComponent.DRONE)
+logger.info("Takeoff initiated")
+```
+
+### Exceptions
+
+- Inherit from `AerpawlibError` (or an appropriate subclass).
+- Pass the original exception as `original_error=e` when wrapping.
+
+---
+
+## Adding new features
+
+### New vehicle method (v1 Drone)
+
+1. Add the method to `aerpawlib/v1/vehicles/drone.py`.
+2. Use `await self._run_on_mavsdk_loop(coro)` for all MAVSDK calls.
+3. Set `_ready_to_move` for blocking movement methods.
+4. Add an integration test in `tests/integration/test_v1_drone.py`.
+
+### New runner decorator
+
+1. Add the decorator in `aerpawlib/v1/runner.py`.
+2. Set an attribute on the decorated function (e.g., `_is_background = True`).
+3. Handle it in `StateMachine._build()` or the equivalent runner method.
+4. Add a unit test in `tests/unit/test_v1_runner.py`.
+
+### New safety checker request
+
+1. Add a constant in `aerpawlib/v1/constants.py`.
+2. Add a handler in `SafetyCheckerServer`.
+3. Add a client method in `SafetyCheckerClient`.
+
+---
+
+## Scripts overview
+
+### `aerpawlib-setup-sitl`
+
+Clones ArduPilot at branch `Copter-4.6.3`, initializes submodules, and compiles SITL targets for Copter and Rover. Skips cloning if `./ardupilot` already exists. Accepts `--skip-compile` to clone without building.
+
+### `aerpawlib-run-example`
+
+Starts a SITL instance, waits for the MAVLink UDP port to become ready, then launches `aerpawlib` with the correct connection string. Stops SITL when the script exits.
+
+```bash
+aerpawlib-run-example --script examples/v2/basic_example.py --vehicle drone
+aerpawlib-run-example --script examples/v1/basic_example.py --vehicle drone --api-version v1
+aerpawlib-run-example --script examples/v2/rover_example.py --vehicle rover
+```
+
+Environment variables:
+
+| Variable | Description |
+|---|---|
+| `ARDUPILOT_HOME` | Override the path to the ArduPilot directory |
+| `SITL_VERBOSE` | Set to `1` to stream raw SITL output to the terminal |
+
+---
+
+## Debugging
+
+### Verbose vehicle state
+
+```bash
+aerpawlib --script my_mission.py --conn ... --vehicle drone --debug-dump
+```
+
+Writes a CSV of vehicle state to `aerpawlib_vehicle_dump_*.csv`.
+
+### Log levels
+
+```bash
+aerpawlib --script my_mission.py ...          # default
+aerpawlib --script my_mission.py ... --debug  # DEBUG level
+aerpawlib --script my_mission.py ... -v       # INFO level
+aerpawlib --script my_mission.py ... -q       # WARNING level only
+```
+
+### gRPC fork warning
+
+When `ExternalProcess` is used, gRPC may emit:
+
+```
+Other threads are currently calling into gRPC, skipping fork() handlers
+```
+
+This is cosmetic. Suppress it with:
+
+```bash
+export GRPC_ENABLE_FORK_SUPPORT=false
+```
+
+---
+
+## Release checklist
+
+- Run the full test suite: `pytest tests/ -v`
+- Update the version in `pyproject.toml`
+- Update `ROADMAP.md` if needed
+- Ensure `docs/README.md` and `USER_GUIDE.md` are current

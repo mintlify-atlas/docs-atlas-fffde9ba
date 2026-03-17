@@ -1,0 +1,309 @@
+---
+title: "v2 Runners"
+description: "BasicRunner, StateMachine, ZmqStateMachine, and all decorator and config APIs."
+---
+
+Runners are the execution framework for aerpawlib v2 scripts. Each runner class receives a connected vehicle and manages the mission lifecycle (arm, run, disarm, cleanup).
+
+## BasicRunner
+
+Use `BasicRunner` when your mission has a single linear entry point.
+
+```python
+from aerpawlib.v2 import BasicRunner, Drone, entrypoint
+
+class MyMission(BasicRunner):
+    @entrypoint
+    async def run(self, drone: Drone):
+        await drone.takeoff(altitude=10)
+        await drone.goto_coordinates(drone.position + VectorNED(20, 0))
+        await drone.land()
+```
+
+### `@entrypoint`
+
+Marks the single async entry point of a `BasicRunner`. Exactly one method per class may use this decorator.
+
+```python
+@entrypoint
+async def run(self, vehicle):
+    ...
+```
+
+### `BasicRunnerConfig`
+
+Explicit config alternative to `@entrypoint`:
+
+```python
+from aerpawlib.v2 import BasicRunner, BasicRunnerConfig
+
+class MyMission(BasicRunner):
+    config = BasicRunnerConfig(entrypoint="run")
+
+    async def run(self, drone):
+        ...
+```
+
+<ResponseField name="entrypoint" type="str">
+  Method name of the entry point.
+</ResponseField>
+
+---
+
+## StateMachine
+
+Use `StateMachine` for missions structured as a graph of named states. Each state is an async method that returns the name of the next state (or `None` to stop).
+
+```python
+from aerpawlib.v2 import StateMachine, Drone, state, timed_state, background, at_init
+import asyncio
+
+class MyMission(StateMachine):
+
+    @at_init
+    async def setup(self, drone: Drone):
+        print(f"Home: {drone.home_coords}")
+
+    @state(name="start", first=True)
+    async def start(self, drone: Drone):
+        await drone.takeoff(10)
+        return "fly"
+
+    @state(name="fly")
+    async def fly(self, drone: Drone):
+        await drone.goto_coordinates(drone.position + VectorNED(50, 0))
+        return "hold"
+
+    @timed_state(name="hold", duration=5)
+    async def hold(self, drone: Drone):
+        return "land"
+
+    @state(name="land")
+    async def land(self, drone: Drone):
+        await drone.land()
+        return None
+
+    @background
+    async def monitor(self, drone: Drone):
+        while True:
+            print(drone.position)
+            await asyncio.sleep(1)
+```
+
+### `@state(name, first=False)`
+
+Define a named state. The method must return the next state name or `None`.
+
+<ParamField path="name" type="str" required>
+  Unique state identifier. Must not be empty.
+</ParamField>
+<ParamField path="first" type="bool">
+  If `True`, this is the initial state. Exactly one state must have `first=True`.
+  Defaults to `False`.
+</ParamField>
+
+### `@timed_state(name, duration, loop=False, first=False)`
+
+A state that runs for a fixed duration before advancing.
+
+<ParamField path="name" type="str" required>
+  Unique state identifier.
+</ParamField>
+<ParamField path="duration" type="float" required>
+  How long to remain in this state in seconds.
+</ParamField>
+<ParamField path="loop" type="bool">
+  If `True`, the method is called repeatedly on every state-machine tick
+  until the duration expires. Defaults to `False`.
+</ParamField>
+<ParamField path="first" type="bool">
+  If `True`, this is the initial state. Defaults to `False`.
+</ParamField>
+
+### `@background`
+
+Mark an async method to run concurrently with the state machine from start to finish. If the method raises an exception it is logged and restarted.
+
+```python
+@background
+async def monitor(self, drone: Drone):
+    while True:
+        print(drone.battery.level)
+        await asyncio.sleep(5)
+```
+
+### `@at_init`
+
+Mark an async method to run once before arm and before the first state. Multiple `@at_init` methods run sequentially in definition order.
+
+```python
+@at_init
+async def setup(self, drone: Drone):
+    print(f"Starting at {drone.home_coords}")
+```
+
+<Note>
+  `@at_init` methods complete before the vehicle arms. Use them for one-time
+  setup that must finish before flight begins.
+</Note>
+
+### `StateMachineConfig`
+
+Explicit config alternative to the decorator API:
+
+```python
+from aerpawlib.v2 import StateMachine, StateMachineConfig, StateSpec
+
+class MyMission(StateMachine):
+    config = StateMachineConfig(
+        initial_state="start",
+        states=[
+            StateSpec(name="start", method_name="start", first=True),
+            StateSpec(name="land",  method_name="land"),
+        ],
+    )
+
+    async def start(self, drone): ...
+    async def land(self, drone): ...
+```
+
+<ResponseField name="initial_state" type="str">
+  Name of the first state to run.
+</ResponseField>
+<ResponseField name="states" type="List[StateSpec]">
+  Ordered list of state specifications.
+</ResponseField>
+<ResponseField name="backgrounds" type="List[str]">
+  Method names to run as background tasks.
+</ResponseField>
+<ResponseField name="at_init" type="List[str]">
+  Method names to run during initialisation.
+</ResponseField>
+
+### `StateSpec`
+
+```python
+@dataclass
+class StateSpec:
+    name: str          # state identifier
+    method_name: str   # Python method name on the runner class
+    first: bool = False
+    duration: float = 0.0   # non-zero => timed state
+    loop: bool = False
+```
+
+---
+
+## ZmqStateMachine
+
+`ZmqStateMachine` extends `StateMachine` with remote ZMQ control: other runners can trigger state transitions and query field values over a shared ZMQ proxy.
+
+```python
+from aerpawlib.v2 import ZmqStateMachine, Drone, state, expose_zmq, expose_field_zmq
+
+class RemoteMission(ZmqStateMachine):
+
+    @expose_zmq("fly")
+    @state(name="fly", first=True)
+    async def fly(self, drone: Drone):
+        await drone.takeoff(10)
+        return "land"
+
+    @state(name="land")
+    async def land(self, drone: Drone):
+        await drone.land()
+        return None
+
+    @expose_field_zmq("altitude")
+    async def get_altitude(self, drone: Drone):
+        return drone.position.alt
+```
+
+Start the proxy first:
+
+```bash
+aerpawlib --run-proxy
+```
+
+Then run each runner with `--zmq-identifier` and `--zmq-proxy-server`.
+
+### `@expose_zmq(name)`
+
+Expose a `@state` method for remote transition commands. Must be stacked on top of `@state` or `@timed_state`.
+
+<ParamField path="name" type="str" required>
+  ZMQ message name that triggers a transition to this state.
+</ParamField>
+
+### `@expose_field_zmq(name)`
+
+Expose an async method as a queryable field. Other runners retrieve its return value with `query_field`.
+
+<ParamField path="name" type="str" required>
+  ZMQ field name remote runners use in `query_field` calls.
+</ParamField>
+
+### `await transition_runner(identifier, state_name)`
+
+Trigger a state transition on another runner.
+
+<ParamField path="identifier" type="str" required>
+  ZMQ identifier of the target runner (its `--zmq-identifier` value).
+</ParamField>
+<ParamField path="state_name" type="str" required>
+  The ZMQ-exposed state name to transition to (the name passed to `@expose_zmq`).
+</ParamField>
+
+### `await query_field(identifier, field)`
+
+Query an exposed field from another runner.
+
+<ParamField path="identifier" type="str" required>
+  ZMQ identifier of the target runner.
+</ParamField>
+<ParamField path="field" type="str" required>
+  The ZMQ field name (the name passed to `@expose_field_zmq`).
+</ParamField>
+
+<ResponseField name="return" type="Any">
+  The value returned by the remote runner's exposed field method.
+</ResponseField>
+
+```python
+# From inside another ZmqStateMachine:
+await self.transition_runner("ground-rover", "deploy")
+alt = await self.query_field("drone-1", "altitude")
+```
+
+### `ZmqStateMachineConfig`
+
+Extends `StateMachineConfig` with ZMQ fields:
+
+<ResponseField name="exposed_states" type="Dict[str, str]">
+  Mapping of ZMQ name → state name for remotely triggerable transitions.
+</ResponseField>
+<ResponseField name="exposed_fields" type="Dict[str, str]">
+  Mapping of ZMQ name → method name for remotely queryable fields.
+</ResponseField>
+
+---
+
+## Runner base class
+
+All runners inherit from `Runner`, which exposes two optional override hooks:
+
+```python
+class Runner:
+    def initialize_args(self, args: List[str]) -> None:
+        """Parse additional CLI arguments passed after known flags."""
+        ...
+
+    def cleanup(self) -> None:
+        """Called on exit; override for resource cleanup."""
+        ...
+```
+
+<Tip>
+  Override `initialize_args` to handle custom CLI flags without modifying the
+  aerpawlib launcher. The `args` list contains all unrecognised argument strings.
+</Tip>

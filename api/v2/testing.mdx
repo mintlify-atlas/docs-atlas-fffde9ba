@@ -1,0 +1,145 @@
+---
+title: "Testing utilities"
+description: "MockVehicle for unit tests and DummyVehicle for full pipeline dry-runs."
+---
+
+v2 ships two lightweight in-process vehicles that let you test runner logic without any MAVSDK or network dependency.
+
+## MockVehicle
+
+`MockVehicle` is a minimal in-memory vehicle for unit tests. It satisfies `VehicleProtocol` and exposes readable properties but performs no async operations.
+
+```python
+from aerpawlib.v2 import MockVehicle, Coordinate
+
+vehicle = MockVehicle(
+    position=Coordinate(35.727, -78.696, 0),
+    armed=False,
+    connected=True,
+)
+```
+
+### Constructor
+
+<ParamField path="position" type="Optional[Coordinate]">
+  Initial position. Defaults to NCSU coordinates at ground level
+  (`Coordinate(35.727436, -78.696587, 0)`).
+</ParamField>
+<ParamField path="home" type="Optional[Coordinate]">
+  Home coordinate. Defaults to the initial position.
+</ParamField>
+<ParamField path="armed" type="bool">
+  Whether the vehicle starts armed. Defaults to `False`.
+</ParamField>
+<ParamField path="connected" type="bool">
+  Whether the vehicle starts in a connected state. Defaults to `True`.
+</ParamField>
+
+### Properties
+
+<ResponseField name="position" type="Coordinate">Current position.</ResponseField>
+<ResponseField name="home_coords" type="Optional[Coordinate]">Home coordinate.</ResponseField>
+<ResponseField name="armed" type="bool">Whether the mock is armed.</ResponseField>
+<ResponseField name="connected" type="bool">Whether the mock is connected.</ResponseField>
+<ResponseField name="battery" type="Battery">Static mock battery: 12.6 V, 100 %.</ResponseField>
+<ResponseField name="gps" type="GPSInfo">Static mock GPS: fix_type 3, 10 satellites.</ResponseField>
+<ResponseField name="heading" type="float">Mock heading, defaults to `0.0`.</ResponseField>
+
+`MockVehicle` also implements `heartbeat_tick()` as a no-op, satisfying `VehicleProtocol`.
+
+### Using MockVehicle in a runner test
+
+```python
+import asyncio
+from aerpawlib.v2 import MockVehicle, Coordinate, BasicRunner, entrypoint
+
+class TelemetryPrinter(BasicRunner):
+    @entrypoint
+    async def run(self, vehicle):
+        print(f"Position: {vehicle.position}")
+        print(f"Battery:  {vehicle.battery.level}%")
+        print(f"Armed:    {vehicle.armed}")
+
+async def test_telemetry_printer():
+    vehicle = MockVehicle(
+        position=Coordinate(35.727, -78.696, 10),
+        armed=True,
+    )
+    runner = TelemetryPrinter()
+    await runner.run(vehicle)
+
+asyncio.run(test_telemetry_printer())
+```
+
+<Tip>
+  Mutate `vehicle._position`, `vehicle._armed`, etc. directly between await
+  points to simulate telemetry changes during a test.
+</Tip>
+
+---
+
+## DummyVehicle
+
+`DummyVehicle` implements the full `Vehicle` interface — including `connect()`, `goto_coordinates()`, `can_takeoff()`, etc. — but performs no actual MAVSDK calls. Use it to dry-run a complete runner pipeline end-to-end.
+
+```python
+from aerpawlib.v2 import DummyVehicle
+
+vehicle = await DummyVehicle.connect()
+# goto_coordinates, can_takeoff, land … all succeed silently
+```
+
+### `DummyVehicle.connect(connection_string="", mavsdk_server_port=50051, *, timeout=..., safety=None) -> DummyVehicle`
+
+All parameters are accepted but ignored — no network connection is opened.
+
+### Pre-set state
+
+| Property | Value |
+|----------|-------|
+| `position` | `Coordinate(35.727436, -78.696587, 0.0)` |
+| `battery` | 12.6 V, 100 % |
+| `gps` | fix_type 3, 10 satellites |
+| `home_coords` | Same as position |
+| `armable` | `True` |
+| `_will_arm` | `False` (runners skip arm wait) |
+
+### Full pipeline dry-run example
+
+```python
+import asyncio
+from aerpawlib.v2 import (
+    DummyVehicle,
+    StateMachine,
+    Coordinate,
+    VectorNED,
+    state,
+)
+
+class FlightMission(StateMachine):
+
+    @state(name="start", first=True)
+    async def start(self, vehicle):
+        print("start -> fly")
+        return "fly"
+
+    @state(name="fly")
+    async def fly(self, vehicle):
+        target = vehicle.position + VectorNED(100, 0)
+        await vehicle.goto_coordinates(target)
+        print(f"Arrived at {vehicle.position}")
+        return None
+
+async def dry_run():
+    vehicle = await DummyVehicle.connect()
+    runner = FlightMission()
+    await runner.run(vehicle)
+
+asyncio.run(dry_run())
+```
+
+<Note>
+  `DummyVehicle.goto_coordinates()` is a no-op, so the vehicle's `position`
+  property does not change. If your test asserts on position, use `MockVehicle`
+  and update `_position` manually.
+</Note>

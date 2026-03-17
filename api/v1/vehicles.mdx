@@ -1,0 +1,350 @@
+---
+title: "v1 Vehicles"
+description: "Drone, Rover, and DummyVehicle classes with all properties and movement methods."
+---
+
+All vehicles share a common `Vehicle` base class that handles MAVSDK connection management, telemetry, and shared properties. `Drone` and `Rover` extend it with type-specific movement commands.
+
+## Connection strings
+
+<CodeGroup>
+```python SITL (UDP)
+from aerpawlib.v1 import Drone
+
+drone = Drone("udp://:14540")
+```
+
+```python Serial
+from aerpawlib.v1 import Drone
+
+drone = Drone("serial:///dev/ttyUSB0:57600")
+```
+
+```python TCP
+from aerpawlib.v1 import Drone
+
+drone = Drone("tcp://localhost:5760")
+```
+
+```python Remote UDP
+from aerpawlib.v1 import Drone
+
+drone = Drone("udp://192.168.1.100:14540")
+```
+</CodeGroup>
+
+For multi-vehicle setups, pass a unique `mavsdk_server_port` to each instance:
+
+```python
+drone1 = Drone("udp://:14540", mavsdk_server_port=50051)
+drone2 = Drone("udp://:14541", mavsdk_server_port=50052)
+```
+
+## Vehicle properties
+
+All properties are available on both `Drone` and `Rover`.
+
+<ResponseField name="connected" type="bool">
+  `True` if the vehicle is currently receiving heartbeats from the autopilot.
+</ResponseField>
+
+<ResponseField name="position" type="Coordinate">
+  Current position as a `Coordinate(lat, lon, alt)`. Altitude is relative to the home location.
+</ResponseField>
+
+<ResponseField name="battery" type="_BatteryCompat">
+  Battery status object.
+  <Expandable title="properties">
+    <ResponseField name="voltage" type="float">Voltage in volts.</ResponseField>
+    <ResponseField name="current" type="float">Current draw in amps.</ResponseField>
+    <ResponseField name="level" type="int">Remaining charge as a percentage (0–100).</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="gps" type="_GPSInfoCompat">
+  GPS status object.
+  <Expandable title="properties">
+    <ResponseField name="fix_type" type="int">Fix type: 0–1 no fix, 2 = 2D fix, 3 = 3D fix.</ResponseField>
+    <ResponseField name="satellites_visible" type="int">Number of visible satellites.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="armed" type="bool">
+  `True` if the vehicle is currently armed.
+</ResponseField>
+
+<ResponseField name="home_coords" type="Coordinate | None">
+  Home/launch position reported by the autopilot. `None` until the vehicle has armed.
+</ResponseField>
+
+<ResponseField name="heading" type="float">
+  Current heading in degrees (0 = North, 90 = East).
+</ResponseField>
+
+<ResponseField name="velocity" type="VectorNED">
+  Current velocity in the NED frame, in m/s.
+</ResponseField>
+
+<ResponseField name="attitude" type="_AttitudeCompat">
+  Vehicle orientation. All values in radians.
+  <Expandable title="properties">
+    <ResponseField name="pitch" type="float">Pitch angle in radians (horizon-relative).</ResponseField>
+    <ResponseField name="roll" type="float">Roll angle in radians (horizon-relative).</ResponseField>
+    <ResponseField name="yaw" type="float">Yaw angle in radians (world-relative, North = 0).</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="autopilot_info" type="_VersionCompat">
+  Autopilot firmware version reported by MAVLink.
+  <Expandable title="properties">
+    <ResponseField name="major" type="int | None">Major version number.</ResponseField>
+    <ResponseField name="minor" type="int | None">Minor version number.</ResponseField>
+    <ResponseField name="patch" type="int | None">Patch version number.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="mode" type="str">
+  Current flight mode string (e.g. `"GUIDED"`, `"HOLD"`, `"AUTO"`).
+</ResponseField>
+
+---
+
+## Drone
+
+`Drone` is for multirotors and supports takeoff, landing, and 3D navigation.
+
+```python
+from aerpawlib.v1 import Drone
+
+drone = Drone("udp://:14540")
+```
+
+<Warning>
+Instantiating `Drone` raises `NotArmableError` if the vehicle is already armed at connection time.
+</Warning>
+
+### `takeoff`
+
+```python
+await drone.takeoff(target_alt, min_alt_tolerance=0.95)
+```
+
+Arm the vehicle (if not already armed) and take off to the target altitude.
+
+<ParamField path="target_alt" type="float" required>
+  Target altitude Above Ground Level in meters.
+</ParamField>
+
+<ParamField path="min_alt_tolerance" type="float">
+  Fraction of `target_alt` the vehicle must reach before the call returns.
+  Default: `0.95`.
+</ParamField>
+
+```python
+await drone.takeoff(10)          # Take off to 10 m
+await drone.takeoff(20, min_alt_tolerance=0.9)  # Accept 18 m as "reached"
+```
+
+### `land`
+
+```python
+await drone.land()
+```
+
+Command the drone to land at the current position. Blocks until the vehicle disarms.
+
+### `goto_coordinates`
+
+```python
+await drone.goto_coordinates(coordinates, tolerance=2, target_heading=None, timeout=300)
+```
+
+Navigate to a `Coordinate`. Blocks until within `tolerance` meters of the target.
+
+<ParamField path="coordinates" type="Coordinate" required>
+  Target position.
+</ParamField>
+
+<ParamField path="tolerance" type="float">
+  Acceptance radius in meters. Default: `2.0`. Must be between 0.1 and 100.
+</ParamField>
+
+<ParamField path="target_heading" type="float | None">
+  Optional heading to face during movement. Clears after arrival.
+</ParamField>
+
+<ParamField path="timeout" type="float">
+  Maximum seconds to wait for arrival. Default: `300.0`.
+</ParamField>
+
+```python
+from aerpawlib.v1 import Coordinate
+
+target = Coordinate(35.7275, -78.6960, 15)
+await drone.goto_coordinates(target)
+await drone.goto_coordinates(target, tolerance=5, target_heading=90)
+```
+
+### `set_heading`
+
+```python
+await drone.set_heading(heading, blocking=True, lock_in=True)
+```
+
+Rotate the drone to the given heading without changing position.
+
+<ParamField path="heading" type="float | None" required>
+  Target heading in degrees (0–360). Pass `None` to clear the locked heading.
+</ParamField>
+
+<ParamField path="blocking" type="bool">
+  If `True`, wait for the turn to complete before returning. Default: `True`.
+</ParamField>
+
+<ParamField path="lock_in" type="bool">
+  If `True`, remember this heading for subsequent movement commands. Default: `True`.
+</ParamField>
+
+```python
+await drone.set_heading(0)    # Face north
+await drone.set_heading(90)   # Face east
+await drone.set_heading(drone.heading + 45)  # Turn 45° clockwise
+```
+
+### `set_velocity`
+
+```python
+await drone.set_velocity(velocity_vector, global_relative=True, duration=None)
+```
+
+Command a velocity in the NED frame. Uses MAVSDK offboard mode internally.
+
+<ParamField path="velocity_vector" type="VectorNED" required>
+  Target velocity in m/s.
+</ParamField>
+
+<ParamField path="global_relative" type="bool">
+  If `True` (default), the vector is world-aligned (North/East). If `False`,
+  the vector is body-relative and rotated by the current heading before sending.
+</ParamField>
+
+<ParamField path="duration" type="float | None">
+  Seconds to maintain the velocity. After the duration, velocity is zeroed and
+  offboard mode is stopped. If `None`, velocity holds until the next command.
+</ParamField>
+
+```python
+from aerpawlib.v1 import VectorNED
+
+# Move north at 5 m/s for 10 seconds
+await drone.set_velocity(VectorNED(5, 0, 0), duration=10)
+
+# Descend at 1 m/s indefinitely
+await drone.set_velocity(VectorNED(0, 0, 1))
+```
+
+### `set_groundspeed`
+
+```python
+await drone.set_groundspeed(velocity)
+```
+
+Set the autopilot cruise speed used during `goto_coordinates`.
+
+<ParamField path="velocity" type="float" required>
+  Cruise speed in m/s.
+</ParamField>
+
+```python
+await drone.set_groundspeed(8)  # 8 m/s cruise speed
+```
+
+### `return_to_launch`
+
+```python
+await drone.return_to_launch()
+```
+
+Command the drone to return to the home position and land. Blocks until disarmed.
+
+---
+
+## Rover
+
+`Rover` is for ground vehicles. It supports 2D navigation using `goto_coordinates` and velocity control but has no `takeoff` or `land` methods.
+
+```python
+from aerpawlib.v1 import Rover
+
+rover = Rover("udp://:14540")
+```
+
+<Info>
+The rover automatically switches to GUIDED (OFFBOARD) mode before arming to satisfy ArduPilot Rover's requirement.
+</Info>
+
+### `goto_coordinates`
+
+```python
+await rover.goto_coordinates(coordinates, tolerance=2.1, target_heading=None, timeout=300)
+```
+
+Navigate to a `Coordinate`. Uses ground distance (2D) for the arrival check.
+
+<ParamField path="coordinates" type="Coordinate" required>
+  Target position. Altitude is ignored; the rover uses the home altitude.
+</ParamField>
+
+<ParamField path="tolerance" type="float">
+  Ground acceptance radius in meters. Default: `2.1`.
+</ParamField>
+
+<ParamField path="target_heading" type="float | None">
+  Ignored for rovers — rovers steer automatically.
+</ParamField>
+
+<ParamField path="timeout" type="float | None">
+  Maximum seconds to wait. Default: `300.0`.
+</ParamField>
+
+### `set_velocity`
+
+```python
+await rover.set_velocity(velocity_vector, global_relative=True, duration=None)
+```
+
+Command a ground velocity. The `down` component is always zeroed.
+
+<ParamField path="velocity_vector" type="VectorNED" required>
+  Target velocity in m/s. The `down` component is ignored.
+</ParamField>
+
+<ParamField path="global_relative" type="bool">
+  If `False`, the vector is rotated by the rover's current heading before sending.
+  Default: `True`.
+</ParamField>
+
+<ParamField path="duration" type="float | None">
+  Seconds to hold the velocity. If `None`, runs until the next command.
+</ParamField>
+
+### `set_groundspeed`
+
+Inherited from `Vehicle`. See [Drone — set_groundspeed](#set_groundspeed).
+
+---
+
+## DummyVehicle
+
+`DummyVehicle` provides a no-op implementation of the vehicle interface for scripts that do not require physical vehicle interaction — for example, pure-computation tasks or unit tests.
+
+```python
+from aerpawlib.v1 import DummyVehicle, BasicRunner, entrypoint
+
+class ComputeTask(BasicRunner):
+    @entrypoint
+    async def run(self, vehicle: DummyVehicle):
+        print("Running without a real vehicle")
+```
+
+`DummyVehicle` has no telemetry and all vehicle methods are no-ops. It is safe to pass wherever a `Vehicle` is expected.

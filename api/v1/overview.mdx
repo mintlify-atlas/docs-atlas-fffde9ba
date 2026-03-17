@@ -1,0 +1,97 @@
+---
+title: "v1 API overview"
+description: "MAVSDK-based vehicle control API, backward compatible with legacy aerpawlib scripts."
+---
+
+The v1 API is the MAVSDK-based evolution of aerpawlib's original DroneKit-backed interface. It is a **drop-in replacement**: all class names, method signatures, and decorator names are identical to the legacy version, so existing scripts require only an import path change.
+
+<Note>
+v1 is a compatibility stopgap. It has no additional features beyond the legacy API and is intended as a bridge until aerpawlib v2 is ready.
+</Note>
+
+## Requirements
+
+- Python 3.9+
+- `mavsdk` — `pip install mavsdk`
+- `pyzmq` — required for safety checker and ZMQ runners
+
+## Migrating from legacy
+
+```python
+# Before (legacy — still works but deprecated)
+from aerpawlib import Drone, Coordinate, BasicRunner, entrypoint
+
+# After (v1)
+from aerpawlib.v1 import Drone, Coordinate, BasicRunner, entrypoint
+```
+
+<Warning>
+Compatibility objects such as `_GPSInfoCompat` do **not** inherit from their DroneKit counterparts. Type assertions (`isinstance(gps, dronekit.GPSInfo)`) will fail.
+</Warning>
+
+## All exports
+
+The following names are exported from `aerpawlib.v1`:
+
+| Name | Category |
+|------|----------|
+| `Drone` | Vehicle |
+| `Rover` | Vehicle |
+| `Vehicle` | Vehicle |
+| `DummyVehicle` | Vehicle |
+| `Coordinate` | Types |
+| `VectorNED` | Types |
+| `BasicRunner` | Runners |
+| `StateMachine` | Runners |
+| `ZmqStateMachine` | Runners |
+| `Runner` | Runners |
+| `entrypoint` | Decorators |
+| `state` | Decorators |
+| `timed_state` | Decorators |
+| `background` | Decorators |
+| `at_init` | Decorators |
+| `expose_zmq` | Decorators |
+| `expose_field_zmq` | Decorators |
+| `SafetyCheckerServer` | Safety |
+| `SafetyCheckerClient` | Safety |
+| `run_zmq_proxy` | ZMQ |
+| `check_zmq_proxy_reachable` | ZMQ |
+| `ExternalProcess` | Utilities |
+| `read_from_plan` | Utilities |
+| `read_geofence` | Utilities |
+
+## Quick start
+
+```python
+from aerpawlib.v1 import Drone, Coordinate, BasicRunner, entrypoint
+
+class MyMission(BasicRunner):
+    @entrypoint
+    async def run(self, drone: Drone):
+        await drone.takeoff(10)
+
+        target = Coordinate(35.7275, -78.6960, 10)
+        await drone.goto_coordinates(target)
+
+        await drone.land()
+```
+
+## Reference pages
+
+<CardGroup cols={2}>
+  <Card title="Vehicles" href="/api/v1/vehicles">
+    `Drone`, `Rover`, `DummyVehicle` — all vehicle classes, properties, and movement methods.
+  </Card>
+  <Card title="Runners" href="/api/v1/runners">
+    `BasicRunner`, `StateMachine`, `ZmqStateMachine` — script execution frameworks and decorators.
+  </Card>
+  <Card title="Types" href="/api/v1/types">
+    `Coordinate`, `VectorNED`, battery/GPS/attitude objects.
+  </Card>
+  <Card title="Safety checker" href="/api/v1/safety">
+    `SafetyCheckerServer` and `SafetyCheckerClient` for geofence validation.
+  </Card>
+  <Card title="ZMQ utilities" href="/api/v1/zmq">
+    `run_zmq_proxy`, `check_zmq_proxy_reachable`, `ExternalProcess`, multi-vehicle patterns.
+  </Card>
+</CardGroup>

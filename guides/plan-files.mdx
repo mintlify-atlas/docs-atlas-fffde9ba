@@ -1,0 +1,205 @@
+---
+title: "QGroundControl plan files"
+description: "Load .plan files exported from QGroundControl and iterate over waypoints using read_from_plan, read_from_plan_complete, and get_location_from_waypoint."
+---
+
+aerpawlib can parse QGroundControl `.plan` files so you can design missions in QGroundControl and execute them with a Python script.
+
+## CLI flag
+
+Pass the plan file path to your script using the `--file` flag (parsed by `initialize_args`):
+
+```bash
+aerpawlib --script examples/v1/preplanned_trajectory.py \
+  --conn udp://127.0.0.1:14550 --vehicle drone --file mission.plan
+```
+
+The `--file` argument is not built into the aerpawlib CLI — it is a custom argument parsed by the script's `initialize_args` method using Python's `argparse`.
+
+---
+
+## Functions
+
+### `read_from_plan(path, default_speed)`
+
+Parse a `.plan` file and return a list of waypoint tuples.
+
+```
+Waypoint = Tuple[command, x/lat, y/lon, z/alt, waypoint_id, speed]
+```
+
+<Tabs>
+  <Tab title="v1">
+    ```python
+    from aerpawlib.v1.util import read_from_plan_complete
+
+    waypoints = read_from_plan_complete("mission.plan", default_speed=5)
+    ```
+
+    v1 returns a list of dicts with keys: `id`, `command`, `pos`, `wait_for`, `speed`.
+  </Tab>
+  <Tab title="v2">
+    ```python
+    from aerpawlib.v2.plan import read_from_plan
+
+    waypoints = read_from_plan("mission.plan", default_speed=5)
+    # Returns: List[Tuple[command, lat, lon, alt, waypoint_id, speed]]
+    ```
+  </Tab>
+</Tabs>
+
+### `read_from_plan_complete(path, default_speed)`
+
+Like `read_from_plan`, but returns detailed dicts instead of tuples. Includes the `wait_for` hold time from QGroundControl's waypoint delay field.
+
+```python
+from aerpawlib.v2.plan import read_from_plan_complete
+
+waypoints = read_from_plan_complete("mission.plan")
+for wp in waypoints:
+    print(wp["id"], wp["command"], wp["pos"], wp["wait_for"], wp["speed"])
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `id` | int | Waypoint ID (`doJumpId` from .plan) |
+| `command` | int | MAVLink command code |
+| `pos` | list | `[lat, lon, alt]` |
+| `wait_for` | float | Hold time at waypoint (seconds) |
+| `speed` | float | Leg speed (m/s) |
+
+### `get_location_from_waypoint(waypoint)`
+
+Extract a `Coordinate` from a waypoint tuple. Works with both v1 and v2.
+
+```python
+from aerpawlib.v2.plan import get_location_from_waypoint
+
+coord = get_location_from_waypoint(waypoint)
+# coord.lat, coord.lon, coord.alt
+```
+
+---
+
+## Command codes
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `PLAN_CMD_TAKEOFF` | 22 | MAV_CMD_NAV_TAKEOFF |
+| `PLAN_CMD_WAYPOINT` | 16 | MAV_CMD_NAV_WAYPOINT |
+| `PLAN_CMD_RTL` | 20 | MAV_CMD_NAV_RETURN_TO_LAUNCH |
+| `PLAN_CMD_SPEED` | 178 | MAV_CMD_DO_CHANGE_SPEED |
+
+---
+
+## Code examples
+
+<Tabs>
+  <Tab title="v1">
+    From `examples/v1/preplanned_trajectory.py`:
+
+    ```python
+    from aerpawlib.v1.runner import StateMachine, at_init, state
+    from aerpawlib.v1.util import Coordinate, read_from_plan_complete
+    from aerpawlib.v1.vehicle import Drone, Vehicle
+    from aerpawlib.v1.aerpaw import AERPAW_Platform
+    from argparse import ArgumentParser
+
+    class PreplannedTrajectory(StateMachine):
+        _waypoints = []
+        _current_waypoint: int = 0
+        _waypoint_fname: str
+
+        def initialize_args(self, extra_args):
+            parser = ArgumentParser()
+            parser.add_argument("--file", required=True)
+            args = parser.parse_args(args=extra_args)
+            self._waypoint_fname = args.file
+
+        @at_init
+        async def initialize_flight(self, vehicle: Vehicle):
+            default_speed = 5 if isinstance(vehicle, Drone) else 1
+            AERPAW_Platform.log_to_oeo("Reading .plan file...")
+            self._waypoints = read_from_plan_complete(
+                self._waypoint_fname, default_speed
+            )
+
+        @state(name="take_off", first=True)
+        async def take_off(self, vehicle: Vehicle):
+            if isinstance(vehicle, Drone):
+                takeoff_alt = self._waypoints[self._current_waypoint]["pos"][2]
+                AERPAW_Platform.log_to_oeo(f"Taking off to {takeoff_alt}m")
+                await vehicle.takeoff(takeoff_alt)
+            return "next_waypoint"
+
+        @state(name="next_waypoint")
+        async def next_waypoint(self, vehicle: Vehicle):
+            self._current_waypoint += 1
+            if self._current_waypoint >= len(self._waypoints):
+                return "rtl"
+            waypoint = self._waypoints[self._current_waypoint]
+            if waypoint["command"] == 20:  # RTL
+                return "rtl"
+            coords = Coordinate(*waypoint["pos"])
+            await vehicle.goto_coordinates(coords)
+            return "next_waypoint"
+
+        @state(name="rtl")
+        async def rtl(self, vehicle: Vehicle):
+            home_coords = Coordinate(
+                vehicle.home_coords.lat,
+                vehicle.home_coords.lon,
+                vehicle.position.alt,
+            )
+            await vehicle.goto_coordinates(home_coords)
+            if isinstance(vehicle, Drone):
+                await vehicle.land()
+            AERPAW_Platform.log_to_oeo("done!")
+    ```
+  </Tab>
+  <Tab title="v2">
+    From `examples/v2/plan_example.py`:
+
+    ```python
+    import os
+    from aerpawlib.v2 import BasicRunner, Drone, entrypoint
+    from aerpawlib.v2.constants import PLAN_CMD_TAKEOFF, PLAN_CMD_WAYPOINT, PLAN_CMD_RTL
+    from aerpawlib.v2.plan import get_location_from_waypoint, read_from_plan
+
+    class PlanMission(BasicRunner):
+        @entrypoint
+        async def run(self, drone: Drone):
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            plan_path = os.path.join(script_dir, "mission.plan")
+
+            waypoints = read_from_plan(plan_path)
+            print(f"Loaded {len(waypoints)} waypoints")
+
+            for wp in waypoints:
+                coord = get_location_from_waypoint(wp)
+                command, x, y, z, wp_id, speed = wp
+                if command == PLAN_CMD_TAKEOFF:
+                    await drone.takeoff(altitude=z)
+                elif command == PLAN_CMD_WAYPOINT:
+                    await drone.goto_coordinates(coord)
+                elif command == PLAN_CMD_RTL:
+                    await drone.return_to_launch()
+                    break
+
+            if PLAN_CMD_RTL not in (w[0] for w in waypoints):
+                await drone.land()
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Notes
+
+<Note>
+  `.plan` files use `fileType: "Plan"` at the top level. aerpawlib raises `PlanError` if the file is missing, not valid JSON, or has the wrong file type.
+</Note>
+
+<Tip>
+  Speed changes in the `.plan` file (`MAV_CMD_DO_CHANGE_SPEED`, command 178) are parsed and carried forward automatically. Each waypoint tuple includes the effective speed at that point in the mission.
+</Tip>
