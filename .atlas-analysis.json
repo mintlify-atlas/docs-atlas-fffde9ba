@@ -1,0 +1,139 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "aerpawlib",
+  "projectDescription": "A Python library for controlling drones and ground vehicles within the AERPAW platform, providing unified vehicle control, scriptable missions, and multi-vehicle coordination via ArduPilot/MAVSDK.",
+  "theme": "palm",
+  "primaryColor": "#34498e",
+  "lightColor": "#7782b0",
+  "darkColor": "#d9e2d4",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/running-scripts",
+              "guides/workflows",
+              "guides/multi-vehicle",
+              "guides/safety-checker",
+              "guides/plan-files",
+              "guides/aerpaw-platform"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/overview",
+              "examples/basic-flight",
+              "examples/state-machine",
+              "examples/zmq-coordination"
+            ]
+          },
+          {
+            "group": "Migration & Reference",
+            "pages": [
+              "migration/v1-to-v2",
+              "migration/feature-parity",
+              "development/contributing",
+              "development/roadmap"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "v1 API",
+            "pages": [
+              "api/v1/overview",
+              "api/v1/vehicles",
+              "api/v1/runners",
+              "api/v1/types",
+              "api/v1/safety",
+              "api/v1/zmq"
+            ]
+          },
+          {
+            "group": "v2 API",
+            "pages": [
+              "api/v2/overview",
+              "api/v2/vehicles",
+              "api/v2/runners",
+              "api/v2/types",
+              "api/v2/safety",
+              "api/v2/testing",
+              "api/v2/exceptions"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Unified vehicle control API for drones (Drone) and ground vehicles (Rover) via MAVSDK",
+    "Scriptable missions with BasicRunner (linear) and StateMachine (state-based) runners",
+    "Multi-vehicle ZMQ coordination for leader/follower and swarm missions",
+    "Built-in safety checker with KML geofence validation and command pre-validation",
+    "QGroundControl .plan file support for pre-planned waypoint missions",
+    "Async-first v2 API with non-blocking VehicleTask commands and cancellation",
+    "Background task execution parallel to main state machine",
+    "AERPAW platform integration with OEO logging and checkpointing",
+    "ExternalProcess utility for spawning and communicating with subprocesses",
+    "ArduPilot SITL simulation support for local development and testing"
+  ],
+  "publicApiSurface": [
+    "aerpawlib.v1.Drone",
+    "aerpawlib.v1.Rover",
+    "aerpawlib.v1.DummyVehicle",
+    "aerpawlib.v1.BasicRunner",
+    "aerpawlib.v1.StateMachine",
+    "aerpawlib.v1.ZmqStateMachine",
+    "aerpawlib.v1.Coordinate",
+    "aerpawlib.v1.VectorNED",
+    "aerpawlib.v1.SafetyCheckerClient",
+    "aerpawlib.v1.SafetyCheckerServer",
+    "aerpawlib.v1.ExternalProcess",
+    "aerpawlib.v1.read_from_plan",
+    "aerpawlib.v1.run_zmq_proxy",
+    "aerpawlib.v2.Drone",
+    "aerpawlib.v2.Rover",
+    "aerpawlib.v2.Vehicle",
+    "aerpawlib.v2.DummyVehicle",
+    "aerpawlib.v2.MockVehicle",
+    "aerpawlib.v2.VehicleTask",
+    "aerpawlib.v2.BasicRunner",
+    "aerpawlib.v2.StateMachine",
+    "aerpawlib.v2.ZmqStateMachine",
+    "aerpawlib.v2.Coordinate",
+    "aerpawlib.v2.VectorNED",
+    "aerpawlib.v2.Battery",
+    "aerpawlib.v2.GPSInfo",
+    "aerpawlib.v2.Attitude",
+    "aerpawlib.v2.Waypoint",
+    "aerpawlib.v2.ExternalProcess",
+    "aerpawlib.v2.AERPAW_Platform",
+    "aerpawlib.v2.read_from_plan",
+    "aerpawlib.v2.read_geofence",
+    "aerpawlib.v2.inside",
+    "aerpawlib.v2.do_intersect",
+    "aerpawlib.v2.run_zmq_proxy",
+    "@entrypoint",
+    "@state",
+    "@timed_state",
+    "@background",
+    "@at_init",
+    "@expose_zmq",
+    "@expose_field_zmq"
+  ]
+}
